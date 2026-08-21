@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+state_file=/run/lilygo-ui-launcher/framebuffer-consoles
+
+case "${1:-}" in
+    acquire)
+        : > "$state_file"
+        for console in /sys/class/vtconsole/vtcon*; do
+            [ -d "$console" ] || continue
+            name=$(cat "$console/name" 2>/dev/null || true)
+            bound=$(cat "$console/bind" 2>/dev/null || true)
+            case "$name:$bound" in
+                *frame*buffer*:1)
+                    basename=${console##*/}
+                    if printf '0\n' > "$console/bind"; then
+                        printf '%s\n' "$basename" >> "$state_file"
+                    fi
+                    ;;
+            esac
+        done
+        ;;
+    release)
+        if [ -f "$state_file" ]; then
+            while IFS= read -r basename; do
+                case "$basename" in
+                    vtcon[0-9]*)
+                        bind_file="/sys/class/vtconsole/$basename/bind"
+                        if [ -w "$bind_file" ]; then
+                            printf '1\n' > "$bind_file" || true
+                        fi
+                        ;;
+                esac
+            done < "$state_file"
+            rm -f "$state_file"
+        fi
+        ;;
+    *)
+        echo "usage: $0 acquire|release" >&2
+        exit 2
+        ;;
+esac
+
+exit 0

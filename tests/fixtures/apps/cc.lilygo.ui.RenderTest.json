@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "id": "cc.lilygo.ui.RenderTest",
+  "name": "Render Test",
+  "description": "Launcher UI test fixture",
+  "icon": "render-test.png",
+  "order": 1,
+  "executable": "/usr/bin/true"
+}

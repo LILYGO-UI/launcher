@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-${CM0_LAUNCHER_STATE_DIR:-/var/lib/lilygo-ui-launcher}}
+original_target_file="$state_dir/original-default-target"
+getty_mask_file="$state_dir/getty-tty1-masked"
+display_manager_unit_file="$state_dir/display-manager-unit"
+
+case "${1:-}" in
+    remove|purge)
+        rm -f "$original_target_file"
+        rm -f "$getty_mask_file"
+        rm -f "$display_manager_unit_file"
+        rmdir "$state_dir" 2>/dev/null || true
+        ;;
+esac
+
+exit 0

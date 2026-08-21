@@ -1,0 +1,7 @@
+/build/
+/.cache/
+CMakeUserPresets.json
+*.deb
+.DS_Store
+.vscode
+_CPack_Packages

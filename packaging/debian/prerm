@@ -1,0 +1,53 @@
+#!/bin/sh
+set -e
+
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-${CM0_LAUNCHER_STATE_DIR:-/var/lib/lilygo-ui-launcher}}
+systemd_runtime_dir=${LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR:-${CM0_LAUNCHER_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}}
+original_target_file="$state_dir/original-default-target"
+getty_mask_file="$state_dir/getty-tty1-masked"
+display_manager_unit_file="$state_dir/display-manager-unit"
+
+case "${1:-}" in
+    remove|deconfigure)
+        if command -v systemctl >/dev/null 2>&1; then
+            if [ -d "$systemd_runtime_dir" ]; then
+                systemctl stop lilygo-ui-launcher.service || true
+            fi
+            systemctl disable lilygo-ui-launcher.service || true
+
+            if [ -e "$getty_mask_file" ]; then
+                systemctl unmask getty@tty1.service || true
+            fi
+
+            if [ -s "$original_target_file" ]; then
+                original_target=$(sed -n '1p' "$original_target_file")
+                case "$original_target" in
+                    *.target)
+                        systemctl set-default "$original_target" || true
+                        ;;
+                esac
+            fi
+
+            if [ -s "$display_manager_unit_file" ]; then
+                display_manager_unit=$(sed -n '1p' "$display_manager_unit_file")
+                case "$display_manager_unit" in
+                    *.service)
+                        systemctl unmask "$display_manager_unit" || true
+                        systemctl enable "$display_manager_unit" || true
+                        if [ -d "$systemd_runtime_dir" ]; then
+                            systemctl start "$display_manager_unit" || true
+                        fi
+                        ;;
+                esac
+            fi
+        fi
+        ;;
+    upgrade|failed-upgrade)
+        if command -v systemctl >/dev/null 2>&1 &&
+           [ -d "$systemd_runtime_dir" ]; then
+            systemctl stop lilygo-ui-launcher.service || true
+        fi
+        ;;
+esac
+
+exit 0

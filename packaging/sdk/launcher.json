@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "launcher",
+  "description": "Headers and libraries required by LILYGO UI Launcher and AppKit",
+  "development_packages": [
+    "libdrm-dev"
+  ],
+  "export_paths": [
+    "lib/aarch64-linux-gnu",
+    "lib/ld-linux-aarch64.so.1",
+    "usr/include",
+    "usr/lib/linux",
+    "usr/lib/aarch64-linux-gnu",
+    "usr/lib/gcc/aarch64-linux-gnu",
+    "usr/lib/pkgconfig",
+    "usr/local/include",
+    "usr/local/lib",
+    "usr/share/pkgconfig",
+    "etc/ld.so.conf",
+    "etc/ld.so.conf.d",
+    "etc/os-release",
+    "var/lib/dpkg/status"
+  ],
+  "required_paths": [
+    "usr/include/stdio.h",
+    "usr/include/aarch64-linux-gnu/bits/libc-header-start.h",
+    "usr/lib/linux/uapi/arm64/asm/errno.h",
+    "usr/lib/linux/uapi/arm64/asm/types.h",
+    "usr/include/xf86drm.h",
+    "usr/include/libdrm/drm.h",
+    "lib/ld-linux-aarch64.so.1",
+    "usr/lib/aarch64-linux-gnu/crt1.o",
+    "usr/lib/aarch64-linux-gnu/libc.so",
+    "usr/lib/aarch64-linux-gnu/libdrm.so",
+    "usr/lib/aarch64-linux-gnu/pkgconfig/libdrm.pc"
+  ]
+}

@@ -1,0 +1,88 @@
+#!/bin/sh
+set -e
+
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-${CM0_LAUNCHER_STATE_DIR:-/var/lib/lilygo-ui-launcher}}
+systemd_runtime_dir=${LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR:-${CM0_LAUNCHER_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}}
+default_display_manager_file=${LILYGO_UI_LAUNCHER_DEFAULT_DISPLAY_MANAGER_FILE:-${CM0_LAUNCHER_DEFAULT_DISPLAY_MANAGER_FILE:-/etc/X11/default-display-manager}}
+original_target_file="$state_dir/original-default-target"
+getty_mask_file="$state_dir/getty-tty1-masked"
+display_manager_unit_file="$state_dir/display-manager-unit"
+
+resolve_display_manager_unit() {
+    unit=$(
+        systemctl show --property=Id --value display-manager.service \
+            2>/dev/null || true
+    )
+    case "$unit" in
+        *.service)
+            if systemctl cat "$unit" >/dev/null 2>&1; then
+                printf '%s\n' "$unit"
+                return 0
+            fi
+            ;;
+    esac
+
+    if [ -r "$default_display_manager_file" ]; then
+        manager_path=$(sed -n '1p' "$default_display_manager_file")
+        manager_name=${manager_path##*/}
+        case "$manager_name" in
+            ''|*[!A-Za-z0-9_.@-]*)
+                ;;
+            *)
+                unit="$manager_name.service"
+                if systemctl cat "$unit" >/dev/null 2>&1; then
+                    printf '%s\n' "$unit"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+
+    return 1
+}
+
+case "${1:-}" in
+    configure)
+        if command -v systemctl >/dev/null 2>&1; then
+            mkdir -p "$state_dir"
+            if [ ! -s "$original_target_file" ]; then
+                original_target=$(systemctl get-default 2>/dev/null || true)
+                case "$original_target" in
+                    *.target)
+                        printf '%s\n' "$original_target" > "$original_target_file"
+                        ;;
+                esac
+            fi
+
+            if [ -d "$systemd_runtime_dir" ]; then
+                systemctl daemon-reload || true
+                systemctl stop lilygo-ui-launcher.service || true
+                systemctl stop cm0-launcher.service || true
+                systemctl disable cm0-launcher.service || true
+            fi
+
+            display_manager_unit=$(resolve_display_manager_unit || true)
+            if [ -n "$display_manager_unit" ]; then
+                if systemctl is-enabled "$display_manager_unit" >/dev/null 2>&1; then
+                    printf '%s\n' "$display_manager_unit" > "$display_manager_unit_file"
+                fi
+                systemctl stop "$display_manager_unit" || true
+                systemctl disable "$display_manager_unit" || true
+            fi
+
+            getty_state=$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)
+            if [ "$getty_state" != masked ] && [ ! -e "$getty_mask_file" ]; then
+                systemctl mask getty@tty1.service || true
+                : > "$getty_mask_file"
+            fi
+
+            systemctl set-default multi-user.target || true
+            systemctl enable lilygo-ui-launcher.service || true
+            if [ -d "$systemd_runtime_dir" ]; then
+                systemctl restart lilygo-ui-launcher.service || true
+            fi
+        fi
+        ;;
+esac
+
+exit 0
