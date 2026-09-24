@@ -169,6 +169,50 @@ grep -Fx 'status=failed' "$state_dir/last-update" >/dev/null
 grep -Fx 'message=dpkg-install-failed' "$state_dir/last-update" >/dev/null
 grep -Fx 'systemctl restart lilygo-ui-launcher.service' "$command_log" >/dev/null
 
+# A Store privileged installer remains alive until the UI receives the queued
+# result and exits. The worker must wait for that caller before running dpkg.
+printf '1.0.0\n' > "$installed_version_file"
+: > "$command_log"
+proc_dir="$test_root/proc"
+parent_pid=$$
+store_pid=4242
+mkdir -p "$proc_dir/$parent_pid"
+mkdir -p "$proc_dir/$store_pid"
+ln -s /usr/libexec/lilygo-ui-store/lilygo-ui-store-package-install \
+    "$proc_dir/$parent_pid/exe"
+ln -s /usr/bin/lilygo-ui-store "$proc_dir/$store_pid/exe"
+printf '%s (lilygo-ui-store-package-install) S %s 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 222\n' \
+    "$parent_pid" "$store_pid" > "$proc_dir/$parent_pid/stat"
+printf '%s (lilygo-ui-store) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 333\n' \
+    "$store_pid" > "$proc_dir/$store_pid/stat"
+
+run_helper_with_proc() {
+    PATH="$mock_bin:$PATH" \
+    LAUNCHER_UPDATE_TEST_LOG="$command_log" \
+    LAUNCHER_UPDATE_TEST_INSTALLED_VERSION="$installed_version_file" \
+    LAUNCHER_UPDATE_TEST_SHA256="$sha256" \
+    LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
+    LILYGO_UI_LAUNCHER_PROC_DIR="$proc_dir" \
+    LILYGO_UI_LAUNCHER_HANDOFF_TIMEOUT=4 \
+        sh "$helper" "$@"
+}
+
+run_helper_with_proc queue "$source_deb" 2.0.0 "$sha256"
+grep -Fx "$parent_pid 222" "$state_dir/updates/pending/wait-for-pid" >/dev/null
+grep -Fx "$store_pid 333" "$state_dir/updates/pending/wait-for-pid" >/dev/null
+run_helper_with_proc worker > "$test_root/wait-worker.log" 2>&1 &
+worker_pid=$!
+sleep 1
+if grep -F 'dpkg --install -- ' "$command_log" >/dev/null; then
+    echo "worker installed Launcher before Store exited" >&2
+    exit 1
+fi
+rm -f "$proc_dir/$parent_pid/stat"
+rm -f "$proc_dir/$store_pid/stat"
+wait "$worker_pid"
+grep -F 'dpkg --install -- ' "$command_log" | grep -F ' helper=1' >/dev/null
+grep -Fx 'message=updated' "$state_dir/last-update" >/dev/null
+
 grep -Fx 'ConditionPathExists=/var/lib/lilygo-ui-launcher/updates/pending/package.deb' \
     "$unit" >/dev/null
 grep -Fx 'ExecStart=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update worker' \

@@ -1,6 +1,7 @@
 [Unit]
 Description=LILYGO UI Launcher
-After=systemd-udev-settle.service
+After=systemd-udev-settle.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 Wants=systemd-udev-settle.service
 Conflicts=getty@tty1.service display-manager.service cm0-launcher.service
 

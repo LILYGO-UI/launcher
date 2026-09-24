@@ -157,6 +157,13 @@ the primary UI and starts as `lilygo-ui-launcher.service` under `multi-user.targ
   --input /dev/input/by-path/platform-3f205000.i2c-event
 ```
 
+The service is ordered after `network-online.target` and `time-sync.target`, so
+the first status-bar reading is taken after the system time synchronizer has had
+an opportunity to set `CLOCK_REALTIME`. The image must still enable a time
+synchronization provider (such as `systemd-timesyncd` or `chrony`) and configure
+the device timezone through `/etc/localtime`; the Launcher follows that system
+clock and timezone and does not implement a separate NTP client.
+
 The service opens DRM/KMS and evdev directly. Before starting it, the package
 installer disables any configured display manager, masks `getty@tty1.service`,
 and changes the default target to `multi-user.target`. It records the previous
@@ -389,8 +396,12 @@ pkexec /usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update \
 ```
 
 `queue` copies the package into root-owned storage before it returns and starts
-the oneshot service without waiting. The service runs outside the Launcher
-cgroup, rechecks the SHA-256 and the Debian `Package`, `Version`, and
+the oneshot service without waiting. When the caller is Store's privileged
+installer, the worker first waits for the installer and Store UI to exit so
+stopping the old Launcher service cannot terminate Store mid-transaction; a
+timeout aborts the update. The service runs outside the Launcher cgroup,
+rechecks the SHA-256 and
+the Debian `Package`, `Version`, and
 `Architecture` fields, rejects reinstalls or downgrades, runs `dpkg`, verifies
 the installed version, and only then restarts Launcher. Its latest state is
 available from

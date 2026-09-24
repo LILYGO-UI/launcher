@@ -56,6 +56,7 @@ sequenceDiagram
     Queue->>Queue: 复制到 root-only pending 目录并再次校验
     Queue->>Worker: systemctl start --no-block
     Queue-->>Store: accepted
+    Worker->>Worker: 等待 Store 安装器和 UI 退出
     Store->>Store: 退出前台 APP
     Worker->>Dpkg: 独立 cgroup 中安装
     Dpkg->>Launcher: prerm 停止旧服务
@@ -72,7 +73,9 @@ pkexec /usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update \
 ```
 
 只有 helper 返回成功后 Store 才退出。helper 持久化 DEB 后异步启动
-`lilygo-ui-launcher-update.service`；worker 再次校验 SHA-256、包名、版本、架构以及
+`lilygo-ui-launcher-update.service`；如果调用者是 Store 的特权安装进程，worker 会先
+等待安装器和 Store UI 退出，避免停止旧 Launcher 服务时连带终止 Store；等待超时则放弃安装。
+worker 随后再次校验 SHA-256、包名、版本、架构以及
 目标版本必须高于已安装版本。worker 设置
 `LILYGO_UI_LAUNCHER_UPDATE_HELPER=1` 调用 `dpkg`，使 `postinst` 不在包事务中提前
 重启 Launcher；worker 在 `dpkg` 返回并核对安装版本后负责最终重启。失败时也会尝试

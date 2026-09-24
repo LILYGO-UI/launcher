@@ -108,6 +108,10 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-update"
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-update.service")
 
+    add_test(NAME launcher-service-unit
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_service_unit.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher.service")
+
     add_test(NAME launcher-cli
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.sh"
             "$<TARGET_FILE:${LILYGO_UI_EXECUTABLE_NAME}>")

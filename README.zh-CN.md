@@ -138,6 +138,11 @@ UI 代码生成步骤。
   --input /dev/input/by-path/platform-3f205000.i2c-event
 ```
 
+该服务排在 `network-online.target` 和 `time-sync.target` 之后启动，因此状态栏首次
+读取时间时，系统校时服务已经有机会设置 `CLOCK_REALTIME`。镜像仍需启用实际的校时
+服务（例如 `systemd-timesyncd` 或 `chrony`），并通过 `/etc/localtime` 配置设备时区；
+Launcher 直接使用系统时钟和时区，不单独实现 NTP 客户端。
+
 服务直接打开 DRM/KMS 和 evdev。启动前，软件包安装脚本会禁用已配置的显示管理器，
 屏蔽 `getty@tty1.service`，并将默认 target 切换为 `multi-user.target`。原来的
 target 和显示管理器状态记录在 `/var/lib/lilygo-ui-launcher`，供卸载时恢复。
@@ -328,7 +333,9 @@ pkexec /usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update \
 ```
 
 `queue` 在返回前将软件包复制到 root 拥有的存储目录，并异步启动 oneshot 服务。
-该服务在 Launcher 的 cgroup 之外运行，再次校验 SHA-256 及 Debian 的 `Package`、
+如果调用者是 Store 的特权安装进程，worker 会先等待安装器和 Store UI 退出，避免旧
+Launcher 服务停止时连带终止 Store；等待超时则放弃本次安装。该服务在 Launcher 的
+cgroup 之外运行，再次校验 SHA-256 及 Debian 的 `Package`、
 `Version`、`Architecture` 字段，拒绝同版本重装或降级，执行 `dpkg` 并验证已安装
 版本，最后才重启 Launcher。可通过
 `/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update status` 或
