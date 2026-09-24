@@ -27,6 +27,7 @@ void launcher_registry_init(launcher_registry_t *registry);
 size_t launcher_registry_scan(launcher_registry_t *registry, const char *directory);
 size_t launcher_registry_prune_missing(launcher_registry_t *registry);
 void launcher_registry_sort(launcher_registry_t *registry);
+int launcher_registry_equal(const launcher_registry_t *left, const launcher_registry_t *right);
 void launcher_registry_destroy(launcher_registry_t *registry);
 
 #ifdef __cplusplus

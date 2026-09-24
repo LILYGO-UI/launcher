@@ -1,0 +1,60 @@
+schema_version = 1
+
+[project]
+package = "lilygo-ui-launcher"
+version = "0.1.1"
+app_id = "cc.lilygo.ui.Launcher"
+title = "Launcher"
+summary = "System application launcher for LILYGO Linux products."
+description = "The primary LILYGO UI shell for discovering and launching installed applications on LILYGO Linux products."
+license = "LicenseRef-proprietary"
+source_repo = "https://github.com/LILYGO-UI/launcher"
+homepage = "https://github.com/LILYGO-UI/launcher"
+categories = ["System"]
+
+[[project.authors]]
+name = "LILYGO"
+email = "110239031@qq.com"
+github = "LILYGO"
+
+[project.assets]
+icon = "assets/app-icon.png"
+
+[[project.assets.screenshots]]
+path = "assets/previews/launcher-portrait.png"
+caption = "Launcher home screen in portrait orientation."
+
+[[project.assets.screenshots]]
+path = "assets/previews/launcher-landscape.png"
+caption = "Launcher home screen in landscape orientation."
+
+[[project.permissions]]
+id = "background-service"
+reason = "Run as the primary system UI and manage application processes."
+
+[[project.permissions]]
+id = "filesystem"
+access = "read"
+scope = "shared-data"
+reason = "Discover installed application manifests and icons."
+
+[[project.permissions]]
+id = "external-display"
+reason = "Drive the device display directly through DRM/KMS."
+
+[project.compatibility]
+architectures = ["arm64"]
+min_appkit_version = "0.1.0"
+
+[project.launcher]
+order = 0
+
+[build]
+host_preset = "host-simulator"
+cross_preset = "cm0-cross"
+package_dir = "dist"
+
+[deploy]
+host = "raspberrypi.local"
+user = "pi"
+port = 22

@@ -1,0 +1,239 @@
+#!/bin/sh
+set -eu
+
+package_name=lilygo-ui-launcher
+launcher_unit=lilygo-ui-launcher.service
+update_unit=lilygo-ui-launcher-update.service
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-/var/lib/lilygo-ui-launcher}
+updates_dir="$state_dir/updates"
+pending_dir="$updates_dir/pending"
+result_file="$state_dir/last-update"
+
+queue_cleanup=0
+worker_mode=0
+restart_needed=0
+worker_status=failed
+worker_version=unknown
+worker_message=update-failed
+
+usage() {
+    cat >&2 <<EOF
+usage: $0 queue DEB VERSION SHA256
+       $0 worker
+       $0 status
+EOF
+    exit 2
+}
+
+fail() {
+    printf 'lilygo-ui-launcher-update: %s\n' "$1" >&2
+    exit 1
+}
+
+validate_state_dir() {
+    case "$state_dir" in
+        ''|/|/var|/var/lib)
+            fail "unsafe state directory"
+            ;;
+    esac
+}
+
+write_result() {
+    status=$1
+    version=$2
+    message=$3
+    result_tmp="$state_dir/.last-update.$$"
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf unknown)
+
+    mkdir -p "$state_dir"
+    chmod 0700 "$state_dir"
+    umask 077
+    {
+        printf 'status=%s\n' "$status"
+        printf 'version=%s\n' "$version"
+        printf 'message=%s\n' "$message"
+        printf 'timestamp=%s\n' "$timestamp"
+    } > "$result_tmp"
+    mv -- "$result_tmp" "$result_file"
+}
+
+on_exit() {
+    result=$?
+    trap - EXIT HUP INT TERM
+
+    if [ "$queue_cleanup" -eq 1 ]; then
+        rm -rf -- "$pending_dir"
+    fi
+
+    if [ "$worker_mode" -eq 1 ]; then
+        rm -rf -- "$pending_dir"
+        if [ "$restart_needed" -eq 1 ]; then
+            if ! systemctl restart "$launcher_unit"; then
+                result=1
+                worker_status=failed
+                worker_message=launcher-restart-failed
+            fi
+        fi
+        write_result "$worker_status" "$worker_version" "$worker_message" || true
+    fi
+
+    exit "$result"
+}
+
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+validate_digest() {
+    digest=$1
+    [ "${#digest}" -eq 64 ] || fail "SHA-256 must contain 64 lowercase hexadecimal characters"
+    case "$digest" in
+        *[!0-9a-f]*)
+            fail "SHA-256 must contain 64 lowercase hexadecimal characters"
+            ;;
+    esac
+}
+
+validate_version() {
+    version=$1
+    case "$version" in
+        ''|*[!A-Za-z0-9.+:~-]*)
+            fail "invalid Debian version"
+            ;;
+    esac
+}
+
+installed_version() {
+    status=$(dpkg-query --show --showformat='${db:Status-Status}' "$package_name" 2>/dev/null) || return 1
+    [ "$status" = installed ] || return 1
+    dpkg-query --show --showformat='${Version}' "$package_name" 2>/dev/null
+}
+
+deb_field() {
+    dpkg-deb --field "$1" "$2" 2>/dev/null | sed -n '1p'
+}
+
+validate_job() {
+    deb=$1
+    expected_version=$2
+    expected_sha256=$3
+
+    validate_version "$expected_version"
+    validate_digest "$expected_sha256"
+    [ -f "$deb" ] && [ ! -L "$deb" ] || fail "update package must be a regular file"
+
+    actual_sha256=$(sha256sum -- "$deb" 2>/dev/null | sed -n 's/[[:space:]].*//p')
+    [ "$actual_sha256" = "$expected_sha256" ] || fail "update package SHA-256 mismatch"
+
+    deb_package=$(deb_field "$deb" Package)
+    [ "$deb_package" = "$package_name" ] || fail "update package has the wrong Package field"
+    deb_version=$(deb_field "$deb" Version)
+    [ "$deb_version" = "$expected_version" ] || fail "update package has the wrong Version field"
+    deb_architecture=$(deb_field "$deb" Architecture)
+    system_architecture=$(dpkg --print-architecture 2>/dev/null || true)
+    [ -n "$system_architecture" ] || fail "cannot determine the system architecture"
+    if [ "$deb_architecture" != all ] && [ "$deb_architecture" != "$system_architecture" ]; then
+        fail "update package has the wrong Architecture field"
+    fi
+
+    current_version=$(installed_version || true)
+    [ -n "$current_version" ] || fail "$package_name is not installed"
+    if ! dpkg --compare-versions "$current_version" lt "$expected_version"; then
+        fail "target version must be newer than the installed version"
+    fi
+}
+
+queue_update() {
+    [ "$#" -eq 3 ] || usage
+    source_deb=$1
+    expected_version=$2
+    expected_sha256=$3
+
+    [ -f "$source_deb" ] && [ ! -L "$source_deb" ] || fail "update package must be a regular file"
+    if systemctl is-active --quiet "$update_unit"; then
+        fail "another Launcher update is already running"
+    fi
+
+    mkdir -p "$updates_dir"
+    chmod 0700 "$state_dir" "$updates_dir"
+    umask 077
+    if ! mkdir "$pending_dir" 2>/dev/null; then
+        fail "another Launcher update is already queued"
+    fi
+    queue_cleanup=1
+
+    cp -- "$source_deb" "$pending_dir/package.deb"
+    chmod 0600 "$pending_dir/package.deb"
+    validate_job "$pending_dir/package.deb" "$expected_version" "$expected_sha256"
+    printf '%s\n' "$expected_version" > "$pending_dir/version"
+    printf '%s\n' "$expected_sha256" > "$pending_dir/sha256"
+    write_result queued "$expected_version" accepted
+
+    queue_cleanup=0
+    if ! systemctl start --no-block "$update_unit"; then
+        queue_cleanup=1
+        write_result failed "$expected_version" service-start-failed || true
+        fail "cannot start $update_unit"
+    fi
+    printf 'queued %s %s\n' "$package_name" "$expected_version"
+}
+
+run_worker() {
+    [ "$#" -eq 0 ] || usage
+    worker_mode=1
+    [ -d "$pending_dir" ] || fail "no Launcher update is queued"
+    [ -f "$pending_dir/version" ] && [ ! -L "$pending_dir/version" ] || fail "queued version is missing"
+    [ -f "$pending_dir/sha256" ] && [ ! -L "$pending_dir/sha256" ] || fail "queued SHA-256 is missing"
+
+    worker_version=$(sed -n '1p' "$pending_dir/version")
+    expected_sha256=$(sed -n '1p' "$pending_dir/sha256")
+    validate_job "$pending_dir/package.deb" "$worker_version" "$expected_sha256"
+
+    restart_needed=1
+    if ! LILYGO_UI_LAUNCHER_UPDATE_HELPER=1 \
+        dpkg --install -- "$pending_dir/package.deb"; then
+        worker_message=dpkg-install-failed
+        exit 1
+    fi
+
+    current_version=$(installed_version || true)
+    if [ "$current_version" != "$worker_version" ]; then
+        worker_message=installed-version-mismatch
+        exit 1
+    fi
+
+    worker_status=succeeded
+    worker_message=updated
+}
+
+show_status() {
+    [ "$#" -eq 0 ] || usage
+    if [ -f "$result_file" ]; then
+        cat "$result_file"
+    else
+        printf 'status=none\n'
+    fi
+}
+
+validate_state_dir
+[ "$(id -u)" -eq 0 ] || fail "must run as root"
+
+command=${1:-}
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+case "$command" in
+    queue)
+        queue_update "$@"
+        ;;
+    worker)
+        run_worker "$@"
+        ;;
+    status)
+        show_status "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

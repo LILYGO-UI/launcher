@@ -1,5 +1,7 @@
 # LILYGO UI Launcher
 
+English | [简体中文](README.zh-CN.md)
+
 LILYGO UI Launcher is an LVGL application launcher for LILYGO Linux products.
 CM0 is the first supported product profile. The current device
 build uses Linux DRM/KMS and evdev directly, with fbdev retained as a fallback;
@@ -15,8 +17,9 @@ the page indicators to reach additional applications. On the host, the
 simulator automatically scales its window to fit the current display while
 preserving that logical canvas. The SDL host window uses high-DPI rendering so
 the scaled interface remains crisp.
-`--orientation portrait|landscape`, `--width`, and `--height` remain available
-for diagnostics.
+`--width` and `--height` set the unrotated portrait base canvas for diagnostics;
+use `--orientation portrait|landscape` to select its initial direction. The SDL
+window remains freely resizable for testing smaller and wider viewports.
 
 ## Project structure
 
@@ -24,22 +27,34 @@ for diagnostics.
 src/
   *.cpp, *.h  Launcher runtime and UI sources
 tests/        Test and UI-rendering sources
+docs/         Design documents and archived validation/deployment evidence
 assets/
   images/     Image assets
   audio/      Audio assets
   fonts/      Font assets
+  app-icon.png  128x128 release icon
+  previews/     Release preview images (not installed)
 ```
 
 Launcher sources live directly under `src/` and launcher tests under `tests/`.
 Applications live in independent repositories and are not stored, compiled,
 tested, or packaged by the launcher repository.
 
+See the [design documentation index](docs/README.md) for lifecycle, graphics,
+SDK packaging, and UI design requirements. Dated optimization and deployment
+reports are preserved in the [historical archive](docs/archive/README.md).
+
 LILYGO UI AppKit is maintained in an independent repository and pinned in this
-project as the `third_party/cm0-appkit` Git submodule. It is compiled statically
-into the Launcher and every application. It exposes a small C API, so an app
-may be implemented in either C or C++. Consumers use its CMake package with
-`find_package(LilyGoUI CONFIG REQUIRED)` and never include AppKit files
-through a relative path into the Launcher repository.
+project as the `third_party/cm0-appkit` Git submodule. Launcher compiles AppKit
+and its bundled LVGL statically. Its C API supports C and C++ apps, and consumers
+use `find_package(LilyGoUI CONFIG REQUIRED)` through the source SDK's CMake
+package.
+
+On devices, `lilygo-ui-appkit-dev` 0.1.0 or newer provides the source SDK and complete
+Inter, Source Han Sans CN, and Font Awesome runtime fonts and their OFL
+licenses. Applications share these font files; AppKit and LVGL code remain in
+each application executable. Updating AppKit code requires updating the pinned
+submodule and rebuilding the application.
 
 Clone with submodules, or initialize them in an existing checkout:
 
@@ -48,20 +63,57 @@ git clone --recurse-submodules https://github.com/LILYGO-UI/launcher.git
 git submodule update --init --recursive
 ```
 
-## Run the host simulator
+## Project management with LPM
 
-Install CMake, pkg-config, and SDL2. On macOS:
+This repository uses [LPM](https://github.com/LILYGO-UI/lpm) as its primary
+development interface. Install it once with `uv` (recommended) or `pip`:
 
 ```sh
-brew install cmake pkg-config sdl2
-cmake --preset host-simulator
-cmake --build --preset host-simulator --parallel
-ctest --preset host-simulator
-./build/host-simulator/lilygo-ui-launcher
+uv tool install "git+https://github.com/LILYGO-UI/lpm.git"
+# Or: python3 -m pip install "git+https://github.com/LILYGO-UI/lpm.git"
+lpm --version
 ```
 
-AppKit carries its pinned LVGL 9.5.0 source and builds it statically, so the
-simulator does not download LVGL during configuration.
+`lpm.toml` is the single developer-maintained source for the Launcher package
+name, version, application ID, release metadata, build presets, and deployment
+defaults. CMake validates it through LPM during configuration and derives its
+project and Debian package metadata from it.
+
+The normal workflow is:
+
+```sh
+lpm start                 # Build and start the host simulator in the background
+lpm stop                  # Stop the background simulator
+lpm test                  # Build and run host tests; write .lpm/test-results.xml
+lpm pack                  # Cross-build and write Debian packages to dist/
+lpm deploy                # Deploy the newest package to the configured target
+lpm metadata --format publish-json --output .lpm/publish.json
+```
+
+Use `lpm start --foreground` when simulator logs should remain attached to the
+terminal. SSH target defaults live in `[deploy]` in `lpm.toml`; command-line
+options such as `--host`, `--user`, `--port`, and `--target` override them.
+After `lpm login`, `lpm publish` submits a validated package and its metadata
+for review.
+
+## Run the host simulator
+
+Install CMake, pkg-config, SDL2, FreeType, and LPM. On macOS:
+
+```sh
+brew install cmake pkg-config sdl2 freetype
+git submodule update --init --recursive
+lpm start --foreground
+lpm test
+```
+
+The host preset selects this repository's AppKit source submodule and builds
+its bundled LVGL 9.5.0 statically, without downloading LVGL during configuration.
+Host fonts are loaded from the submodule's assets. No installed AppKit binary
+SDK or `CMAKE_PREFIX_PATH` setup is needed. If reusing a previous binary-SDK
+build directory, reset its CMake cache once with
+`cmake --fresh --preset host-simulator` (CMake 3.24+).
+
 The host simulator starts without bundled applications. Install application
 packages or point `LAUNCHER_APP_DIRS` at application manifests to populate the
 home screen. Each application is built and packaged from its own repository.
@@ -92,7 +144,8 @@ runtime resource flow.
 See [`docs/ui-design-guidelines.md`](docs/ui-design-guidelines.md) for the LILYGO UI
 responsive-layout and typography requirements, including viewport adaptation,
 orientation changes, Inter and Source Han Sans CN usage, type sizes,
-mixed-language text, embedded glyph generation, and font licensing.
+mixed-language text, runtime font loading, supplemental fonts, and font
+licensing.
 
 ## Production startup
 
@@ -111,11 +164,33 @@ target and display-manager state under `/var/lib/lilygo-ui-launcher` so package
 removal can restore them. No XDG autostart or application-menu entry is
 installed.
 
+Alongside the touchscreen input, the launcher discovers the GPIO `KEY_POWER`
+event device by its evdev capabilities. A press sequence shows a shutdown
+overlay with `正在关机` and `请继续按住电源键`; the overlay returns to the
+normal page after the GEK100 pulse stream has been quiet for 300 ms. The
+board's long-press helper handles the three-second power-off decision. Use
+`--power-input PATH` when a specific event node is needed for diagnostics;
+normal deployments can leave it unset so event numbering and udev path names
+remain independent of the launcher.
+
 `lilygo-ui-launcher-console` temporarily unbinds framebuffer console drivers while
 the service owns KMS and rebinds them when the service stops. Launcher and
-applications use the same DRM device serially: the launcher releases its DRM
-display and evdev input before starting an application, then reacquires both
-after that process exits.
+applications use the same DRM device serially. With an AppKit SDK supporting
+DRM/EGL handoff, the launcher pauses its timers, completes pending page flips,
+drops DRM master and closes evdev input before starting an application. It
+keeps its UI, EGL context, texture caches and last framebuffer alive. After the
+application exits, it reacquires master, presents the retained frame, reopens
+evdev and rebinds gestures before resuming updates. Software DRM, older SDKs
+and failed handoffs use display/UI destruction and recreation.
+
+Retaining the launcher caches increases memory use while an application runs;
+measure the combined workload on the target. Set `LILYGO_UI_DRM_RECREATE=1`
+to force the previous recreation path for diagnosis or comparison. The
+`switch prepared` and `switch restored` logs report `release_ms`, `restore_ms`
+and whether the display was retained. These are process-side transition
+measurements, not application first-frame or physical scanout times. See the
+[application lifecycle](docs/launcher-app-lifecycle.md) for ownership, fallback
+and diagnostic details. Applications still start as independent new processes.
 
 ## Cross-compile for CM0
 
@@ -125,13 +200,49 @@ when it is first configured. CMake verifies the archive's SHA-256 checksum and
 extracts it under `.cache/cm0-bsp/0.1.0`; later builds reuse that cache. A local
 CM0BspBuilder checkout is not required.
 
+The BSP supplies the compiler and base system libraries. AppKit sources are
+compiled from the pinned submodule; the sysroot does not need AppKit binary
+packages. For a custom BSP, pass its toolchain with `-DCMAKE_TOOLCHAIN_FILE=...`.
+
 The device backend has no SDL, Wayland, xkbcommon, spdlog, or fmt dependency.
+The default renderer is software. With a BSP containing `libgbm-dev`,
+`libegl-dev`, and `libgles-dev`, configure a separate Launcher build with
+`-DLILYGO_UI_RENDERER=opengles` to use AppKit's GLES2 texture cache and GPU
+display rotation. The pinned BSP 0.1.0 needs those development packages
+added to a separate sysroot first; pass that BSP's toolchain directly.
+See [AppKit device graphics](third_party/cm0-appkit/README.md#device-graphics)
+for configuration and the software/GPU comparison tools. GPU application
+packages add `libgbm1`, `libegl1`, and `libgles2` dependencies. EGL initialization
+failures are reported at startup; use a software build for devices without a
+working EGL/GBM driver.
+
+An experimental `-DLILYGO_UI_RENDERER=nanovg` build uses GPU primitive
+drawing through NanoVG GLES2. It requires stencil-8/MSAA-4 EGL support and
+must be built in a separate directory. The SDK's graphics comparison runner
+tests both static-content scrolling and continuously changing widgets against
+software and cached GLES rendering. Keep the production renderer selected
+from target measurements rather than changing it merely because a GPU build
+succeeds.
+
+The [graphics design](docs/graphics-rendering.md) explains renderer selection,
+rotation and buffer ownership, the private VC4 runtime, and the CPU/memory
+tradeoffs behind those choices. NanoVG remains experimental because shadow and
+arc fidelity differ from the reference. The
+[application lifecycle design](docs/launcher-app-lifecycle.md) defines display
+retention, fallback recovery, and switch-latency measurement boundaries.
+
+See the [DRM hardware test guide](tests/README.md) for temporary-child exit
+coverage, real-application first-frame and return measurements, gesture exits,
+and complete-recreation comparisons. The tests require exclusive DRM ownership
+on the CM0 target; the guide includes the private VC4 runtime environment used
+by the production service. The [archived reports](docs/archive/README.md)
+preserve prior hardware results, deployment versions, and recovery evidence;
+they do not validate subsequent code changes.
 DRM is the production backend; fbdev remains available as a compatibility
 fallback.
 
 ```sh
-cmake --preset cm0-cross
-cmake --build --preset cm0-cross --parallel
+lpm pack
 file build/cm0-cross/lilygo-ui-launcher
 DESTDIR="$PWD/build/cm0-root" cmake --install build/cm0-cross
 ```
@@ -230,8 +341,7 @@ optional launcher-discovery manifest. It has no package dependency on
 ## Build a launcher Debian package
 
 ```sh
-cd build/cm0-cross
-cpack -G DEB
+lpm pack
 ```
 
 The generated `.deb` is written to the repository's `dist/` directory. Launcher
@@ -242,12 +352,66 @@ build and do not depend on `lilygo-ui-launcher`.
 
 Installing the launcher package enables `lilygo-ui-launcher.service`, selects
 `multi-user.target`, and disables the graphical display manager. The package
-contains no desktop-session entry and depends only on libc, libstdc++, and
-libdrm at runtime. Launcher applications inherit the DRM, connector, evdev, and
-canvas arguments required to take over the same display while they run.
+contains no desktop-session entry and depends at runtime on `libc6`,
+`libstdc++6`, `libdrm2`, `libfreetype6`, the image and compression libraries
+used by the AppKit font stack, and `lilygo-ui-appkit-dev` (at least 0.1.0,
+as recorded in `project.compatibility.min_appkit_version`). That package
+provides the source SDK, shared font files, and licenses. Graphics dependencies follow the
+selected renderer. AppKit and LVGL themselves are statically linked, so no
+AppKit shared library or ABI capability package is required on the device.
+Launcher applications inherit the DRM, connector, evdev, and canvas arguments
+required to take over the same display while they run.
 
-The launcher package provides, conflicts with, and replaces the former
-`cm0-launcher` package during migration.
+See the [SDK and packaging design](docs/sdk-packaging.md) for source and runtime
+ownership, package validation, and deployment verification.
+
+The launcher package provides the former `cm0-launcher` identity at the current
+version, and conflicts with and replaces that package during migration.
+
+### Store-mediated Launcher updates
+
+Launcher updates must not run `dpkg` in `lilygo-ui-launcher.service`. Store and
+all applications launched from it share that service's cgroup, while the old
+package's `prerm` stops the service during an upgrade. The package therefore
+installs a root-only handoff helper and a separate oneshot service:
+
+```text
+/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update
+/usr/lib/systemd/system/lilygo-ui-launcher-update.service
+```
+
+After Store has downloaded and verified a published Registry release, it hands
+the package to the helper and exits the foreground application:
+
+```sh
+pkexec /usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update \
+  queue /tmp/downloaded-launcher.deb VERSION SHA256
+```
+
+`queue` copies the package into root-owned storage before it returns and starts
+the oneshot service without waiting. The service runs outside the Launcher
+cgroup, rechecks the SHA-256 and the Debian `Package`, `Version`, and
+`Architecture` fields, rejects reinstalls or downgrades, runs `dpkg`, verifies
+the installed version, and only then restarts Launcher. Its latest state is
+available from
+`/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update status` and in
+`/var/lib/lilygo-ui-launcher/last-update`; full output goes to journald under
+`lilygo-ui-launcher-update.service`.
+
+Store must treat `lilygo-ui-launcher` as a non-removable system package. It may
+offer only the update action for this package, and must use the handoff helper
+instead of its normal synchronous `dpkg --install` path. The Debian package is
+also marked with `Priority: required`, and its `prerm` rejects removal unless an
+administrator explicitly sets `LILYGO_UI_LAUNCHER_ALLOW_REMOVE=1`. The helper
+is the upgrade path after a baseline package containing it has been installed;
+images with an older Launcher require that baseline package to be deployed once
+by the system image or an administrator.
+
+Deploy the newest generated package using the target configured in `lpm.toml`:
+
+```sh
+lpm deploy
+```
 
 During a cold boot, another boot client can briefly retain DRM master after the
 device node and connector are already available. The device DRM backend waits

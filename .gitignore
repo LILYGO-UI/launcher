@@ -1,7 +1,8 @@
-/build/
 /.cache/
-CMakeUserPresets.json
-*.deb
+/.lpm/
+/.venv/
+/.vscode/
+/build/
+/dist/
+/publish.json
 .DS_Store
-.vscode
-_CPack_Packages

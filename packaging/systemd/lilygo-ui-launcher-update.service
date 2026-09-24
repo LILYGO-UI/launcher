@@ -1,0 +1,14 @@
+[Unit]
+Description=Install a verified LILYGO UI Launcher update
+After=local-fs.target
+ConditionPathExists=/var/lib/lilygo-ui-launcher/updates/pending/package.deb
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-update worker
+TimeoutStartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lilygo-ui-launcher-update

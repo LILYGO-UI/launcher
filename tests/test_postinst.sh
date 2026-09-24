@@ -77,8 +77,48 @@ PATH="$mock_bin:$PATH" \
 CM0_TEST_SYSTEMCTL_LOG="$systemctl_log" \
 LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
 LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR="$systemd_runtime_dir" \
+LILYGO_UI_LAUNCHER_DEFAULT_DISPLAY_MANAGER_FILE="$default_display_manager_file" \
+LILYGO_UI_LAUNCHER_UPDATE_HELPER=1 \
+    sh "$postinst" configure 1.2.3
+
+assert_called "enable lilygo-ui-launcher.service"
+if grep -Fx "restart lilygo-ui-launcher.service" "$systemctl_log" >/dev/null; then
+    echo "the package script restarted Launcher before the update helper finished" >&2
+    exit 1
+fi
+
+: > "$systemctl_log"
+PATH="$mock_bin:$PATH" \
+CM0_TEST_SYSTEMCTL_LOG="$systemctl_log" \
+LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
+LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR="$systemd_runtime_dir" \
+    sh "$prerm" upgrade 1.2.3
+
+assert_called "stop lilygo-ui-launcher.service"
+if grep -Fx "stop lilygo-ui-launcher-update.service" "$systemctl_log" >/dev/null; then
+    echo "an upgrade must not stop its own update service" >&2
+    exit 1
+fi
+
+: > "$systemctl_log"
+if PATH="$mock_bin:$PATH" \
+    CM0_TEST_SYSTEMCTL_LOG="$systemctl_log" \
+    LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
+    LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR="$systemd_runtime_dir" \
+        sh "$prerm" remove 2>/dev/null; then
+    echo "prerm allowed removal of the protected Launcher package" >&2
+    exit 1
+fi
+test ! -s "$systemctl_log"
+
+PATH="$mock_bin:$PATH" \
+CM0_TEST_SYSTEMCTL_LOG="$systemctl_log" \
+LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
+LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR="$systemd_runtime_dir" \
+LILYGO_UI_LAUNCHER_ALLOW_REMOVE=1 \
     sh "$prerm" remove
 
+assert_called "stop lilygo-ui-launcher-update.service"
 assert_called "stop lilygo-ui-launcher.service"
 assert_called "disable lilygo-ui-launcher.service"
 assert_called "unmask getty@tty1.service"

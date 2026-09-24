@@ -9,8 +9,14 @@ display_manager_unit_file="$state_dir/display-manager-unit"
 
 case "${1:-}" in
     remove|deconfigure)
+        if [ "${LILYGO_UI_LAUNCHER_ALLOW_REMOVE:-0}" != 1 ]; then
+            echo "lilygo-ui-launcher is a protected system component" >&2
+            echo "set LILYGO_UI_LAUNCHER_ALLOW_REMOVE=1 for an intentional administrator removal" >&2
+            exit 1
+        fi
         if command -v systemctl >/dev/null 2>&1; then
             if [ -d "$systemd_runtime_dir" ]; then
+                systemctl stop lilygo-ui-launcher-update.service || true
                 systemctl stop lilygo-ui-launcher.service || true
             fi
             systemctl disable lilygo-ui-launcher.service || true

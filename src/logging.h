@@ -9,16 +9,16 @@ void error(const char *format, ...) noexcept;
 
 class Runtime {
 public:
-  explicit Runtime(const char *component) noexcept;
-  ~Runtime();
+    explicit Runtime(const char *component) noexcept;
+    ~Runtime();
 
-  Runtime(const Runtime &) = delete;
-  Runtime &operator=(const Runtime &) = delete;
+    Runtime(const Runtime &)            = delete;
+    Runtime &operator=(const Runtime &) = delete;
 
 private:
-  const char *previous_component_ = nullptr;
+    const char *previous_component_ = nullptr;
 };
 
-} // namespace launcher::logging
+}  // namespace launcher::logging
 
 #endif

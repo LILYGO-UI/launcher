@@ -8,9 +8,17 @@ display_manager_unit_file="$state_dir/display-manager-unit"
 
 case "${1:-}" in
     remove|purge)
+        case "$state_dir" in
+            ''|/|/var|/var/lib)
+                echo "refusing to clean unsafe Launcher state directory" >&2
+                exit 1
+                ;;
+        esac
         rm -f "$original_target_file"
         rm -f "$getty_mask_file"
         rm -f "$display_manager_unit_file"
+        rm -f "$state_dir/last-update"
+        rm -rf "$state_dir/updates"
         rmdir "$state_dir" 2>/dev/null || true
         ;;
 esac

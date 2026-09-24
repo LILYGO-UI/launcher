@@ -1,4 +1,0 @@
-interface:
-  display_name: "Deploy DEB to Raspberry Pi"
-  short_description: "Deploy local DEB packages to the project Raspberry Pi"
-  default_prompt: "Use $deploy-deb-to-raspberry-pi to deploy a local DEB package to the Raspberry Pi."

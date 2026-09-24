@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
-project(lilygo_ui_launcher VERSION 0.1.0 LANGUAGES C CXX)
+
+include(cmake/LpmMetadata.cmake)
+project(${LILYGO_UI_CMAKE_PROJECT_NAME} LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(CTest)
 find_package(Threads REQUIRED)
+
+configure_file(
+    cmake/app_identity.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/app_identity.h
+    @ONLY)
 
 # Device packages use libraries from the target's standard multiarch paths.
 # Do not preserve sysroot-derived runtime search paths in the root service.
@@ -32,16 +39,22 @@ target_compile_options(launcher_core PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(launcher_core PUBLIC
     launcher_logging LilyGoUI::SystemStatus)
 
-add_executable(lilygo-ui-launcher
+add_executable(${LILYGO_UI_EXECUTABLE_NAME}
     src/main.cpp
+    src/display_session.cpp
+    src/power_button.cpp
     src/ui.cpp
     src/launcher_view.cpp)
-target_include_directories(lilygo-ui-launcher PRIVATE src)
-target_compile_options(lilygo-ui-launcher PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE
+    src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_compile_options(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE
+    -Wall -Wextra -Wpedantic)
 if(CM0_SIMULATOR)
-    target_compile_definitions(lilygo-ui-launcher PRIVATE LAUNCHER_SIMULATOR=1)
+    target_compile_definitions(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE
+        LAUNCHER_SIMULATOR=1)
 endif()
-target_link_libraries(lilygo-ui-launcher PRIVATE
+target_link_libraries(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE
     launcher_core LilyGoUI::StatusBar LilyGoUI::UIFonts)
 
 if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
@@ -65,6 +78,10 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME launcher-process COMMAND launcher-process-tests
         "$<TARGET_FILE:launcher-process-child>")
 
+    add_test(NAME launcher-display-session
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_session.sh"
+            "${CMAKE_CXX_COMPILER}")
+
     add_executable(launcher-render-ui
         tests/render_ui.c src/ui.cpp src/launcher_view.cpp)
     target_include_directories(launcher-render-ui PRIVATE src)
@@ -76,7 +93,9 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME launcher-render-ui COMMAND launcher-render-ui
         "${CMAKE_CURRENT_BINARY_DIR}/launcher-home.ppm"
         "${CMAKE_CURRENT_BINARY_DIR}/launcher-quick-controls.ppm"
-        "${CMAKE_CURRENT_BINARY_DIR}/launcher-home-landscape.ppm")
+        "${CMAKE_CURRENT_BINARY_DIR}/launcher-home-landscape.ppm"
+        "${CMAKE_CURRENT_BINARY_DIR}/launcher-home-compact.ppm"
+        "${CMAKE_CURRENT_BINARY_DIR}/launcher-quick-controls-compact.ppm")
 
     add_test(NAME launcher-postinst
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_postinst.sh"
@@ -84,34 +103,64 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm"
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm")
 
+    add_test(NAME launcher-update-helper
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_update_helper.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-update"
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-update.service")
+
+    add_test(NAME launcher-cli
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.sh"
+            "$<TARGET_FILE:${LILYGO_UI_EXECUTABLE_NAME}>")
+
 endif()
 
-install(TARGETS lilygo-ui-launcher RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+install(TARGETS ${LILYGO_UI_EXECUTABLE_NAME}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT launcher)
 install(FILES packaging/systemd/lilygo-ui-launcher.service
+              packaging/systemd/lilygo-ui-launcher-update.service
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system
         COMPONENT launcher)
 install(PROGRAMS packaging/systemd/lilygo-ui-launcher-console
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/lilygo-ui-launcher
+                 packaging/systemd/lilygo-ui-launcher-update
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/${LILYGO_UI_PACKAGE_NAME}
         COMPONENT launcher)
 lilygo_ui_install_font_licenses(
-    "${CMAKE_INSTALL_DATAROOTDIR}/doc/lilygo-ui-launcher" launcher)
+    "${CMAKE_INSTALL_DATAROOTDIR}/doc/${LILYGO_UI_PACKAGE_NAME}" launcher)
 
 set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 set(CPACK_SET_DESTDIR ON)
-set(CPACK_PACKAGE_NAME lilygo-ui-launcher)
-set(CPACK_PACKAGE_CONTACT "LilyGo")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "LILYGO UI application launcher")
+set(CPACK_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
+set(CPACK_PACKAGE_VERSION "${LILYGO_UI_VERSION}")
+if(LILYGO_UI_VERSION MATCHES
+   "^([0-9]+:)?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    set(CPACK_PACKAGE_VERSION_MAJOR "${CMAKE_MATCH_2}")
+    set(CPACK_PACKAGE_VERSION_MINOR "${CMAKE_MATCH_3}")
+    set(CPACK_PACKAGE_VERSION_PATCH "${CMAKE_MATCH_4}")
+else()
+    set(CPACK_PACKAGE_VERSION_MAJOR 0)
+    set(CPACK_PACKAGE_VERSION_MINOR 0)
+    set(CPACK_PACKAGE_VERSION_PATCH 0)
+endif()
+set(CPACK_PACKAGE_CONTACT "${LILYGO_UI_PACKAGE_CONTACT}")
+set(CPACK_PACKAGE_VENDOR "${LILYGO_UI_PACKAGE_VENDOR}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${LILYGO_UI_APP_SUMMARY}")
+set(CPACK_PACKAGE_HOMEPAGE_URL "${LILYGO_UI_APP_HOMEPAGE}")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_COMPONENTS_ALL launcher)
-set(CPACK_DEBIAN_LAUNCHER_PACKAGE_NAME "lilygo-ui-launcher")
+set(CPACK_DEBIAN_LAUNCHER_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
 set(CPACK_DEBIAN_LAUNCHER_FILE_NAME DEB-DEFAULT)
-set(CPACK_DEBIAN_LAUNCHER_DESCRIPTION "LILYGO UI application launcher")
+set(CPACK_DEBIAN_LAUNCHER_DESCRIPTION "${LILYGO_UI_APP_SUMMARY}")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_DEPENDS
-    "libc6, libstdc++6, libdrm2")
-set(CPACK_DEBIAN_LAUNCHER_PACKAGE_PROVIDES "cm0-launcher")
+    "libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION}), systemd, dpkg, coreutils")
+if(LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS)
+    string(APPEND CPACK_DEBIAN_LAUNCHER_PACKAGE_DEPENDS
+        ", ${LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS}")
+endif()
+set(CPACK_DEBIAN_LAUNCHER_PACKAGE_PROVIDES
+    "cm0-launcher (= ${LILYGO_UI_VERSION})")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONFLICTS "cm0-launcher")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_REPLACES "cm0-launcher")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONTROL_EXTRA
@@ -120,7 +169,9 @@ set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONTROL_EXTRA
     "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONTROL_STRICT_PERMISSION ON)
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "required")
 if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE
+        "${LILYGO_UI_PACKAGE_ARCHITECTURE}")
 endif()
 include(CPack)

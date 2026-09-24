@@ -45,6 +45,9 @@ case "${1:-}" in
     configure)
         if command -v systemctl >/dev/null 2>&1; then
             mkdir -p "$state_dir"
+            chmod 0700 "$state_dir"
+            mkdir -p "$state_dir/updates"
+            chmod 0700 "$state_dir/updates"
             if [ ! -s "$original_target_file" ]; then
                 original_target=$(systemctl get-default 2>/dev/null || true)
                 case "$original_target" in
@@ -78,7 +81,8 @@ case "${1:-}" in
 
             systemctl set-default multi-user.target || true
             systemctl enable lilygo-ui-launcher.service || true
-            if [ -d "$systemd_runtime_dir" ]; then
+            if [ -d "$systemd_runtime_dir" ] &&
+               [ "${LILYGO_UI_LAUNCHER_UPDATE_HELPER:-0}" != 1 ]; then
                 systemctl restart lilygo-ui-launcher.service || true
             fi
         fi
