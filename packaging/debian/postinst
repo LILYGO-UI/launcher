@@ -41,6 +41,10 @@ resolve_display_manager_unit() {
     return 1
 }
 
+unit_exists() {
+    systemctl cat "$1" >/dev/null 2>&1
+}
+
 case "${1:-}" in
     configure)
         if command -v systemctl >/dev/null 2>&1; then
@@ -59,9 +63,20 @@ case "${1:-}" in
 
             if [ -d "$systemd_runtime_dir" ]; then
                 systemctl daemon-reload || true
+                # Stop a running text wizard without erasing its request.
+                # The installed drop-in suppresses future starts while Launcher
+                # captures and completes that same request on its own screen.
+                if unit_exists userconfig.service; then
+                    systemctl stop userconfig.service || true
+                fi
                 systemctl stop lilygo-ui-launcher.service || true
-                systemctl stop cm0-launcher.service || true
-                systemctl disable cm0-launcher.service || true
+                # Clean up the old package unit during migration, but do not
+                # ask systemd to operate on a unit that is absent on a fresh
+                # installation.
+                if unit_exists cm0-launcher.service; then
+                    systemctl stop cm0-launcher.service || true
+                    systemctl disable cm0-launcher.service || true
+                fi
             fi
 
             display_manager_unit=$(resolve_display_manager_unit || true)

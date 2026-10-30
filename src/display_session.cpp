@@ -1,5 +1,6 @@
 #include "display_session.h"
 #include "app_identity.h"
+#include "keyboard_device.h"
 #include "logging.h"
 
 #include <stdlib.h>
@@ -46,6 +47,11 @@ DisplaySession::~DisplaySession()
 {
     close_input();
     clear_display();
+    if (input_group_) {
+        lv_group_set_default(nullptr);
+        lv_group_delete(input_group_);
+        input_group_ = nullptr;
+    }
     if (paused_) lv_timer_enable(true);
 #if defined(LAUNCHER_SIMULATOR)
     if (sdl_initialized_) lv_sdl_quit();
@@ -62,6 +68,20 @@ void DisplaySession::input_deleted(lv_event_t *event)
 {
     auto *session   = static_cast<DisplaySession *>(lv_event_get_user_data(event));
     session->input_ = nullptr;
+}
+
+void DisplaySession::keyboard_deleted(lv_event_t *event)
+{
+    auto *session      = static_cast<DisplaySession *>(lv_event_get_user_data(event));
+    session->keyboard_ = nullptr;
+}
+
+void DisplaySession::keyboard_event(lv_event_t *event)
+{
+    auto *session = static_cast<DisplaySession *>(lv_event_get_user_data(event));
+    if (!session || !session->keyboard_) return;
+    if (launcher_ui_handle_keyboard_input(session->ui_, session->keyboard_))
+        lv_indev_stop_processing(session->keyboard_);
 }
 
 bool DisplaySession::uses_drm() const
@@ -86,6 +106,15 @@ launcher_orientation_t DisplaySession::orientation() const
                : LAUNCHER_ORIENTATION_PORTRAIT;
 }
 
+bool DisplaySession::tca8418_present() const
+{
+#if defined(LAUNCHER_SIMULATOR)
+    return false;
+#else
+    return tca8418_present_;
+#endif
+}
+
 void DisplaySession::apply_orientation()
 {
 #if defined(LAUNCHER_SIMULATOR)
@@ -107,6 +136,33 @@ void DisplaySession::set_orientation(launcher_orientation_t orientation)
     refresh();
 }
 
+void DisplaySession::poll_keyboard()
+{
+#if !defined(LAUNCHER_SIMULATOR)
+    if (!display_ && !paused_) return;
+
+    // Power loss resets the chip while its old input node can remain alive.
+    // Let the kernel reinitialize it before looking for a usable keyboard.
+    const bool present = update_tca8418_keyboard();
+    if (present && !tca8418_present_) tca8418_landscape_pending_ = true;
+    tca8418_present_ = present;
+    if (paused_) return;
+
+    // Retry discovery after startup or an evdev deletion so newly registered
+    // keyboards can also navigate the launcher.
+    if (!keyboard_) {
+        open_keyboard();
+        if (keyboard_) launcher_ui_rebind_input(ui_);
+    }
+
+    if (tca8418_landscape_pending_ && orientation() != LAUNCHER_ORIENTATION_LANDSCAPE) {
+        set_orientation(LAUNCHER_ORIENTATION_LANDSCAPE);
+        logging::info("TCA8418 connected; display orientation changed to landscape");
+    }
+    tca8418_landscape_pending_ = false;
+#endif
+}
+
 bool DisplaySession::create_display()
 {
     if (strcmp(options_.display_backend, "sdl") == 0) {
@@ -118,7 +174,6 @@ bool DisplaySession::create_display()
             sdl_initialized_ = true;
             lv_sdl_window_set_title(display_, LILYGO_UI_LAUNCHER_APP_NAME);
             lv_sdl_window_set_resizeable(display_, true);
-            input_ = lv_sdl_mouse_create();
         }
 #else
         logging::error("SDL backend is not included in this build");
@@ -155,17 +210,31 @@ bool DisplaySession::create_display()
 
 void DisplaySession::open_input()
 {
-#if !defined(LAUNCHER_SIMULATOR)
-    input_ = lv_evdev_create(LV_INDEV_TYPE_POINTER, options_.input_path);
+    input_ = cm0_input_create_pointer(options_.input_path);
     if (!input_) logging::warn("cannot initialize input device '%s'", options_.input_path);
-#endif
+    open_keyboard();
     if (input_) lv_indev_add_event_cb(input_, input_deleted, LV_EVENT_DELETE, this);
+}
+
+void DisplaySession::open_keyboard()
+{
+    // AppKit discovers keyboard event nodes independently from the configured
+    // pointer path. The pointer path usually names the touchscreen, while the
+    // TCA8418 matrix has its own event node and may be hot-swapped.
+    keyboard_ = cm0_input_create_keyboard(nullptr);
+    if (keyboard_ && input_group_) {
+        lv_indev_set_group(keyboard_, input_group_);
+        lv_indev_add_event_cb(keyboard_, keyboard_event, LV_EVENT_KEY, this);
+        lv_indev_add_event_cb(keyboard_, keyboard_deleted, LV_EVENT_DELETE, this);
+    }
 }
 
 void DisplaySession::close_input()
 {
     if (input_) lv_indev_delete(input_);
     input_ = nullptr;
+    if (keyboard_) lv_indev_delete(keyboard_);
+    keyboard_ = nullptr;
 }
 
 void DisplaySession::clear_display()
@@ -198,9 +267,13 @@ bool DisplaySession::initialize(launcher_orientation_t orientation)
                   !uses_drm()            ? "software"
                   : LV_USE_DRAW_NANOVG   ? "nanovg"
                   : LV_USE_DRAW_OPENGLES ? "opengles"
-                                         : "software");
+                  : "software");
+    input_group_ = lv_group_create();
+    lv_group_set_default(input_group_);
     open_input();
-    return create_ui();
+    if (!create_ui()) return false;
+    poll_keyboard();
+    return true;
 }
 
 void DisplaySession::refresh()
@@ -274,6 +347,7 @@ bool DisplaySession::resume()
 #endif
     lv_timer_enable(true);
     paused_ = false;
+    poll_keyboard();
     refresh_ready();
     return true;
 }

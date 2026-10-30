@@ -11,15 +11,41 @@ screen without rebuilding the launcher.
 
 The device and simulator default to the product UI's 568x1232 portrait canvas.
 The home screen uses a 96 px AppKit status bar and shows up to 18 applications per
-page in a 3x6 portrait grid or 6x3 landscape grid. Swipe down from the status
-bar to open Quick controls and switch orientation. Swipe horizontally or use
-the page indicators to reach additional applications. On the host, the
-simulator automatically scales its window to fit the current display while
+page in a 3x6 portrait grid or 6x3 landscape grid. Press Space or swipe down from
+the status bar to open Quick controls and switch orientation; press Space again
+or Esc to close the panel. Swipe horizontally or use the page indicators to reach
+additional applications. On the host, the simulator automatically scales its
+window to fit the current display while
 preserving that logical canvas. The SDL host window uses high-DPI rendering so
 the scaled interface remains crisp.
 `--width` and `--height` set the unrotated portrait base canvas for diagnostics;
 use `--orientation portrait|landscape` to select its initial direction. The SDL
 window remains freely resizable for testing smaller and wider viewports.
+
+On the device, connecting a TCA8418 keyboard selects landscape, including when
+it is already connected at startup. Disconnecting it keeps the current
+orientation. Quick controls can always switch either way; that choice is kept
+while the keyboard stays connected, including after returning from an app.
+Connecting the keyboard again selects landscape. Other keyboards and the SDL
+simulator's host keyboard do not trigger automatic rotation.
+After signing in on the device, Quick controls also provides **Lock screen**.
+Locking keeps the current account session and requires that account's password
+to unlock. **Sign out** ends the session instead. Quick controls also provides
+iOS-style **Power off**, **Brightness**, and **Volume** cards. Brightness and
+volume can be dragged vertically or adjusted from a keyboard in five-percent
+steps. Power off always asks for confirmation; the simulator shows a safe
+completion message instead of powering off the host.
+Connection detection reads the TCA8418 configuration register through
+`/dev/i2c-*`. If unplugging resets the chip while its input node remains,
+Launcher rebinds that TCA8418 client to the kernel driver to restore matrix
+scanning and interrupts, then discovers the replacement input device. Failed
+recovery is retried without overriding a manual orientation choice. This needs
+access to the keyboard's I2C adapter and the driver's sysfs bind/unbind controls;
+the installed root service has those permissions.
+Recovery continues while Launcher waits for a foreground application. Apps
+use AppKit's keyboard deletion and reconnection handling to open the new evdev
+node; because AppKit is statically linked, existing applications must be rebuilt
+with that SDK change to recover without restarting the application.
 
 ## Project structure
 
@@ -101,7 +127,7 @@ for review.
 Install CMake, pkg-config, SDL2, FreeType, and LPM. On macOS:
 
 ```sh
-brew install cmake pkg-config sdl2 freetype
+brew install cmake pkg-config sdl2 freetype glib openssl@3
 git submodule update --init --recursive
 lpm start --foreground
 lpm test
@@ -113,6 +139,12 @@ Host fonts are loaded from the submodule's assets. No installed AppKit binary
 SDK or `CMAKE_PREFIX_PATH` setup is needed. If reusing a previous binary-SDK
 build directory, reset its CMake cache once with
 `cmake --fresh --preset host-simulator` (CMake 3.24+).
+
+Sign in to the host simulator with username `pi` and password `raspberry`.
+These virtual credentials support sign-in, screen lock/unlock, and sign-out
+without creating or authenticating a system account. Applications run as the
+current development-machine user. This authentication is compiled only into
+the host simulator; device builds use real Linux accounts and PAM.
 
 The host simulator starts without bundled applications. Install application
 packages or point `LAUNCHER_APP_DIRS` at application manifests to populate the
@@ -171,6 +203,112 @@ target and display-manager state under `/var/lib/lilygo-ui-launcher` so package
 removal can restore them. No XDG autostart or application-menu entry is
 installed.
 
+The service runs as root to own the display and configure the first account.
+For pi-gen images, `lilygo-ui-launcher-first-boot prepare` detects the request
+left by `rename-user` (the SSH rename banner, `piwiz.desktop`, or enabled
+`userconfig.service`) and saves the original UID and name in the root-owned
+`/var/lib/lilygo-ui-launcher/first-boot-pending` file. The Launcher then shows a
+mandatory **First-time setup** flow: region and language, account, Wi-Fi,
+updates, then completion. The account page has username, password, and confirmation.
+The original username is prefilled: keeping `pi` or choosing a new name is
+valid. Setup renames the original account, its home, and its matching primary
+group in place, preserving the UID, existing supplementary groups, and files
+such as preinstalled SSH keys. The image's disabled-login shell is changed to
+`/bin/bash`. Exact account entries in `subuid`, `subgid`,
+and an existing `010_pi-nopasswd` rule follow the new name.
+
+Setup ensures membership in `sudo`, using the distribution's existing sudo
+policy. The package depends on `sudo`; a missing sudo group fails setup before
+account changes. Launcher does not create a passwordless rule. An image without
+an existing UID 1000 account can instead create its first account with `useradd`,
+including `sudo` and the available `video`, `render`, and `input` groups.
+
+After setting the password through `chpasswd` stdin and authenticating through
+PAM, Launcher commits `/var/lib/lilygo-ui-launcher/active-user`. The remaining
+steps continue before completion removes the upstream wizard entry, temporary wizard account and sudo rule,
+SSH rename banner, and autologin marker, and disable `userconfig.service`.
+Cleanup leaves the Launcher's DRM service and boot target in place. Failed
+setup keeps the original UID as the retry target. A root-only
+`first-boot-progress` file records completed steps; after a restart the saved
+account must authenticate before setup resumes. Interrupted final cleanup is
+retryable. After a rename has started, retries keep the chosen
+name until setup completes. Passwords are never saved in Launcher state or
+passed on a command line.
+
+With `DISABLE_FIRST_BOOT_USER_RENAME=1` and a preconfigured account, the Launcher
+shows normal sign-in instead. The first successful login records that account;
+it does not rename it or change its groups. Later boots show sign-in, and
+signing out closes the PAM session. Application children run after `initgroups`,
+`setgid`, and `setuid` to the authenticated account with its `HOME` and XDG
+paths. The systemd `userconfig.service` drop-in prevents the console wizard
+from competing for tty1 while Launcher is installed.
+
+After sign-in, open **Quick controls → File sharing** to receive files from a
+browser on the same LAN. Select the device named `lilygo_xxxx` (the last two
+Bluetooth MAC bytes) in the browser and the
+Bluetooth GATT and local WebRTC connection are negotiated automatically; no
+pairing code is required. Once the DataChannel opens, the browser releases
+Bluetooth and the device stops advertising while the LAN session continues.
+Before each file is sent, the device shows its name and size and requires an
+explicit **Receive file** confirmation. Declining rejects that file without
+receiving its contents. No WSS signaling address or relay service is needed.
+Closing the panel, locking, or signing out stops sharing.
+
+Files go to the authenticated user's private `$HOME/Downloads`, using temporary
+files, size/SHA-256 verification, atomic commit, and numbered names for conflicts.
+The root-owned launcher never uses its inherited `HOME` for this path. See
+[browser LAN file sharing](docs/file-sharing.md) for connection steps, browser
+requirements, limits, transport dependencies, and tests.
+
+To test setup again on a configured board, preserve its administrator and use a
+disposable source account with backed-up wizard state. See the
+[re-entry and restoration procedure](tests/README.md#re-entering-setup-on-an-already-configured-board).
+The helper's `prepare` command does not reset completed setup; use the
+simulator's `--setup-demo` for a UI-only preview.
+
+For an account created by an older Launcher, an existing administrator must
+add it once, for example `sudo usermod -aG sudo wing` (or `usermod -aG sudo wing`
+from a root shell). Sign out and sign in again, including reconnecting SSH,
+before using sudo. Updating Launcher alone does not change existing accounts.
+
+For an interactive pi-gen image, leave `FIRST_USER_PASS` unset and leave
+`DISABLE_FIRST_BOOT_USER_RENAME` unset (or set it to `0`). The image does not
+ship a default password, and Launcher handles the account step locally without
+an XDG desktop. This implements the account lifecycle from
+[rename-user](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/rename-user),
+[userconf](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/userconf), and
+[cancel-rename](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/cancel-rename).
+Regional choices come from the installed country, locale, zoneinfo and XKB
+catalogs. Launcher applies the country (Wi-Fi regulatory domain), UTF-8 system
+language, timezone and system keyboard layout through
+[raspi-config](https://github.com/RPi-Distro/raspi-config/blob/trixie/raspi-config)
+and checks the saved settings before continuing. Language selection configures
+the system locale; the current Launcher UI remains English. Keyboard selection
+configures the Linux console and desktop; the Launcher software keyboard and
+AppKit's raw evdev text mapping currently retain their US layout.
+
+Wi-Fi uses NetworkManager: scan or enter a hidden SSID, connect with WPA2/WPA3,
+Enhanced Open or an open network, or skip. WPA passwords go over stdin, never
+argv or Launcher logs. NetworkManager stores the system connection. Enterprise
+802.1X and WEP networks require separate administrator configuration.
+
+Updates are optional. Check, install, retry, or return to Wi-Fi after a failure.
+The independent `lilygo-ui-launcher-first-boot-update.service` owns apt so a
+Launcher package upgrade cannot terminate the installation. It refreshes package
+lists, upgrades packages with new dependencies while retaining existing config
+files, and records progress under `first-boot-update`. Navigation stays locked
+while checking/installing; an interrupted installation can be retried. Finish
+enters the home screen; restart after setup when requested by an update.
+
+Preview all steps without changing the host:
+
+```sh
+build/host-simulator/lilygo-ui-launcher --setup-demo
+```
+
+Browser selection and boot-partition `userconf`/`userconf.txt` import are outside
+this flow; preconfigure an account when building a headless image.
+
 Alongside the touchscreen input, the launcher discovers the GPIO `KEY_POWER`
 event device by its evdev capabilities. A press sequence shows a shutdown
 overlay with `正在关机` and `请继续按住电源键`; the overlay returns to the
@@ -210,6 +348,14 @@ CM0BspBuilder checkout is not required.
 The BSP supplies the compiler and base system libraries. AppKit sources are
 compiled from the pinned submodule; the sysroot does not need AppKit binary
 packages. For a custom BSP, pass its toolchain with `-DCMAKE_TOOLCHAIN_FILE=...`.
+The native file-sharing helper also needs GLib/GIO and OpenSSL development
+files. For the pinned BSP, CMake automatically downloads SHA-256-pinned ARM64
+development packages into `.cache/cm0-bsp/transport/trixie-arm64-v1`, including
+the sysprof and zlib metadata required by GLib. This separate cache reuses the
+BSP runtime libraries and leaves the original sysroot untouched. Custom BSPs
+must provide their own matching development files. The WebRTC dependencies
+are built from pinned source; see
+[file sharing](docs/file-sharing.md#device-architecture-and-installed-files).
 
 The device backend has no SDL, Wayland, xkbcommon, spdlog, or fmt dependency.
 The default renderer is software. With a BSP containing `libgbm-dev`,
@@ -304,6 +450,14 @@ Manifests are read from `$LAUNCHER_APP_DIRS`, the user XDG data directory,
 `/usr/local/share/launcher/apps`, and `/usr/share/launcher/apps`, in that
 precedence order. Invalid manifests, missing executables, and duplicate IDs are
 skipped.
+
+Application children run as the authenticated Linux user after `initgroups`,
+`setgid`, and `setuid`, with the launcher's root-only environment entries
+removed. Launcher does not force `PR_SET_NO_NEW_PRIVS` on that child, so
+existing `sudo` or polkit policy can evaluate requests from applications such
+as Settings when they change SSH or serial-console configuration. The
+application still needs the user's normal authorization and authentication;
+Launcher does not provide root credentials.
 
 While the home screen is visible, the directories are rescanned every two
 seconds. Newly installed packages appear without restarting the launcher and

@@ -1,0 +1,180 @@
+#!/bin/sh
+# A separate systemd job owns apt, so restarting/upgrading Launcher cannot kill it.
+set -eu
+umask 077
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-/var/lib/lilygo-ui-launcher}
+job_dir="$state_dir/first-boot-update"
+unit=lilygo-ui-launcher-first-boot-update.service
+worker=0
+finished=0
+progress_pid=
+phase=queued
+percent=0
+count=0
+reboot=0
+
+fail() { printf 'first-boot-update: %s\n' "$1" >&2; exit 1; }
+secure_dir() {
+    [ ! -L "$1" ] || fail 'state directory must not be a link'
+    if [ ! -e "$1" ]; then mkdir -m 0700 "$1"; fi
+    [ -d "$1" ] || fail 'state directory is not a directory'
+    case "$(stat -c '%u:%a' "$1")" in 0:700) ;; *) fail 'state directory must be root-owned mode 0700' ;; esac
+}
+secure_file() {
+    [ -f "$1" ] && [ ! -L "$1" ] || fail 'invalid job file'
+    [ "$(stat -c '%u:%a' "$1")" = 0:600 ] || fail 'job file must be root-owned mode 0600'
+}
+write_status() {
+    # Values are constants or validated numbers, never apt/user supplied text.
+    status=$1
+    message=$2
+    tmp=$(mktemp "$job_dir/.status.XXXXXX")
+    {
+        printf 'status=%s\nmessage=%s\npercent=%s\npackages=%s\nreboot=%s\n' \
+            "$status" "$message" "$percent" "$count" "$reboot"
+    } > "$tmp"
+    mv -f "$tmp" "$job_dir/status"
+}
+on_exit() {
+    code=$?
+    trap - EXIT HUP INT TERM
+    if [ -n "$progress_pid" ]; then
+        kill "$progress_pid" 2>/dev/null || true
+        wait "$progress_pid" 2>/dev/null || true
+    fi
+    if [ "$worker" -eq 1 ]; then
+        rm -f "$job_dir/progress"
+        if [ "$finished" -ne 1 ]; then write_status failed "$phase-failed" || true; fi
+    fi
+    exit "$code"
+}
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+[ "$(id -u)" = 0 ] || fail 'must run as root'
+case "$state_dir" in ''|/|/var|/var/lib) fail 'unsafe state directory' ;; esac
+secure_dir "$state_dir"
+secure_dir "$job_dir"
+# flock follows its path; reject links before opening in the protected directory.
+[ ! -L "$job_dir/lock" ] || fail 'invalid lock'
+exec 9>"$job_dir/lock"
+
+service_running() {
+    service_state=$(systemctl show --property=ActiveState --value "$unit") || fail 'cannot inspect update service'
+    case "$service_state" in
+        inactive|failed)
+            # --no-block may return before ActiveState changes. A queued
+            # systemd Job is live work even while the unit still says inactive.
+            service_job=$(systemctl show --property=Job --value "$unit") || fail 'cannot inspect update job'
+            case "$service_job" in ''|0) return 1 ;; *[!0-9]*) fail 'invalid update job state' ;; *) return 0 ;; esac ;;
+        activating|active|reloading|deactivating) return 0 ;;
+        *) fail 'unknown update service state' ;;
+    esac
+}
+
+queue() {
+    operation=$1
+    flock -n 9 || fail 'an update is already running'
+    if service_running; then fail 'an update is already running'; fi
+    tmp=$(mktemp "$job_dir/.request.XXXXXX")
+    printf '%s\n' "$operation" > "$tmp"
+    mv -f "$tmp" "$job_dir/request"
+    write_status queued "$operation-queued"
+    if ! systemctl start --no-block "$unit"; then
+        write_status failed service-start-failed
+        fail 'cannot start update service'
+    fi
+}
+read_progress() {
+    while IFS=: read -r event item value details; do
+        case "$value" in ''|*[!0-9.]*|*.*.*) continue ;; esac
+        value=${value%%.*}
+        [ -n "$value" ] && [ "$value" -le 100 ] || continue
+        percent=$value
+        case "$event" in
+            dlstatus) write_status downloading downloading-packages ;;
+            pmstatus) write_status installing installing-packages ;;
+        esac
+    done < "$job_dir/progress"
+}
+run_worker() {
+    flock -w 10 9 || fail 'an update is already running'
+    secure_file "$job_dir/request"
+    operation=$(cat "$job_dir/request")
+    case "$operation" in check|install) ;; *) fail 'invalid update request' ;; esac
+    worker=1
+    phase=checking
+    write_status checking refreshing-package-lists
+    export DEBIAN_FRONTEND=noninteractive
+    export APT_LISTCHANGES_FRONTEND=none
+    # Defer daemon restarts to the final reboot; auto-restart could stop the
+    # service that currently owns apt after libc/systemd upgrades.
+    export NEEDRESTART_MODE=l
+    export LC_ALL=C
+    : > "$job_dir/log"
+    if [ "$operation" = install ]; then
+        # A reboot during a previous dpkg run can leave packages unpacked. This
+        # idempotent repair makes Retry useful without requiring a terminal.
+        phase=repairing
+        write_status installing repairing-packages
+        dpkg --force-confdef --force-confold --configure -a >> "$job_dir/log" 2>&1 || exit 1
+        phase=checking
+        write_status checking refreshing-package-lists
+    fi
+    # Treat even one failed repository as a failed refresh. Do not silently use stale lists.
+    apt-get -o APT::Update::Error-Mode=any -o DPkg::Lock::Timeout=60 update >> "$job_dir/log" 2>&1 || exit 1
+    phase=checking
+    apt-get -s -o DPkg::Lock::Timeout=60 --with-new-pkgs upgrade > "$job_dir/plan" 2>> "$job_dir/log" || exit 1
+    count=$(awk '/^Inst / { n++ } END { print n+0 }' "$job_dir/plan")
+    case "$count" in ''|*[!0-9]*) fail 'invalid package count' ;; esac
+    if [ "$operation" = check ]; then
+        percent=100
+        write_status available check-complete
+        finished=1
+        return
+    fi
+    phase=installing
+    percent=0
+    write_status installing installing-packages
+    [ ! -e "$job_dir/progress" ] || rm -f "$job_dir/progress"
+    mkfifo -m 0600 "$job_dir/progress"
+    read_progress &
+    progress_pid=$!
+    # Keep installed configuration files and permit new dependencies, but do not
+    # automatically remove existing applications. apt/dpkg own their normal locks.
+    result=0
+    apt-get -y --with-new-pkgs -o DPkg::Lock::Timeout=60 \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        -o APT::Status-Fd=3 -o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 upgrade \
+        3> "$job_dir/progress" >> "$job_dir/log" 2>&1 || result=$?
+    wait "$progress_pid" || true
+    progress_pid=
+    [ "$result" -eq 0 ] || exit "$result"
+    [ ! -e /var/run/reboot-required ] || reboot=1
+    percent=100
+    write_status succeeded install-complete
+    finished=1
+}
+show_status() {
+    if [ ! -e "$job_dir/status" ]; then printf 'status=idle\n'; return; fi
+    secure_file "$job_dir/status"
+    # An interrupted boot leaves durable status; expose a retryable failure when
+    # systemd confirms no live worker exists. Never infer failure from a timeout.
+    current=$(sed -n 's/^status=//p' "$job_dir/status")
+    case "$current" in queued|checking|downloading|installing)
+        if ! service_running; then
+            printf 'status=failed\nmessage=interrupted\npercent=0\npackages=0\nreboot=0\n'
+            return
+        fi ;;
+    esac
+    cat "$job_dir/status"
+}
+[ "$#" -eq 1 ] || fail 'usage: first-boot-update check|install|worker|status'
+case "$1" in
+    check|install) queue "$1" ;;
+    worker) run_worker ;;
+    status) show_status ;;
+    *) fail 'unknown operation' ;;
+esac

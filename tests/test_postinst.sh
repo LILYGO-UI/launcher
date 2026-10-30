@@ -31,6 +31,12 @@ case "$1:$2" in
     cat:lightdm.service)
         exit 0
         ;;
+    cat:cm0-launcher.service)
+        if [ "${CM0_TEST_OLD_UNIT:-0}" = 1 ]; then
+            exit 0
+        fi
+        exit 1
+        ;;
 esac
 exit 0
 EOF
@@ -38,6 +44,7 @@ chmod +x "$mock_bin/systemctl"
 
 PATH="$mock_bin:$PATH" \
 CM0_TEST_SYSTEMCTL_LOG="$systemctl_log" \
+CM0_TEST_OLD_UNIT=1 \
 LILYGO_UI_LAUNCHER_STATE_DIR="$state_dir" \
 LILYGO_UI_LAUNCHER_SYSTEMD_RUNTIME_DIR="$systemd_runtime_dir" \
 LILYGO_UI_LAUNCHER_DEFAULT_DISPLAY_MANAGER_FILE="$default_display_manager_file" \
@@ -54,8 +61,14 @@ assert_called() {
 
 assert_called "cat display-manager.service"
 assert_called "cat lightdm.service"
+assert_called "cat cm0-launcher.service"
 assert_called "stop lightdm.service"
 assert_called "disable lightdm.service"
+assert_called "stop userconfig.service"
+if grep -Fx "disable userconfig.service" "$systemctl_log" >/dev/null; then
+    echo "postinst must preserve the first-boot request until setup succeeds" >&2
+    exit 1
+fi
 assert_called "mask getty@tty1.service"
 assert_called "set-default multi-user.target"
 assert_called "stop cm0-launcher.service"
@@ -82,6 +95,11 @@ LILYGO_UI_LAUNCHER_UPDATE_HELPER=1 \
     sh "$postinst" configure 1.2.3
 
 assert_called "enable lilygo-ui-launcher.service"
+if grep -Fx "stop cm0-launcher.service" "$systemctl_log" >/dev/null ||
+   grep -Fx "disable cm0-launcher.service" "$systemctl_log" >/dev/null; then
+    echo "postinst must not operate on an absent legacy unit" >&2
+    exit 1
+fi
 if grep -Fx "restart lilygo-ui-launcher.service" "$systemctl_log" >/dev/null; then
     echo "the package script restarted Launcher before the update helper finished" >&2
     exit 1

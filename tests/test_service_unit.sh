@@ -2,6 +2,7 @@
 set -eu
 
 unit=${1:?service unit path is required}
+dropin=${2:?userconfig drop-in path is required}
 
 assert_unit_value() {
     key=$1
@@ -15,3 +16,18 @@ assert_unit_value() {
 
 assert_unit_value After "systemd-udev-settle.service network-online.target time-sync.target"
 assert_unit_value Wants "network-online.target time-sync.target"
+assert_unit_value User "root"
+assert_unit_value Group "root"
+assert_unit_value Before "userconfig.service"
+if grep -F 'Conflicts=userconfig.service' "$unit" >/dev/null; then
+    echo 'conflicting boot jobs can prevent Launcher from starting' >&2
+    exit 1
+fi
+grep -Fx 'ConditionPathExists=!/usr/bin/lilygo-ui-launcher' "$dropin" >/dev/null
+grep -F 'ExecStart=/usr/bin/lilygo-ui-launcher' "$unit" >/dev/null
+grep -F 'ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-console acquire' "$unit" >/dev/null
+grep -Fx 'ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-first-boot prepare' "$unit" >/dev/null
+if grep -Eq '^[[:space:]]*NoNewPrivileges=yes([[:space:]]|$)' "$unit"; then
+    echo 'NoNewPrivileges blocks application sudo/polkit requests' >&2
+    exit 1
+fi

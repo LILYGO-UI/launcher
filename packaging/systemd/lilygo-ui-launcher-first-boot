@@ -1,0 +1,119 @@
+#!/bin/sh
+set -eu
+umask 077
+
+# Account changes happen in the authenticated Launcher setup transaction. This
+# helper only captures pi-gen's request and retires it after the active account
+# has been committed. A fixture root keeps packaging tests off the host /etc.
+root=${LILYGO_UI_LAUNCHER_ROOT:-}
+state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-$root/var/lib/lilygo-ui-launcher}
+pending_file="$state_dir/first-boot-pending"
+active_file="$state_dir/active-user"
+progress_file="$state_dir/first-boot-progress"
+piwiz_file="$root/etc/xdg/autostart/piwiz.desktop"
+banner_file="$root/etc/ssh/sshd_config.d/rename_user.conf"
+
+fail() { echo "Launcher first boot: $*" >&2; exit 1; }
+
+valid_name() {
+    case "$1" in
+        ''|root|*[!a-z0-9_-]*|[!a-z_]* ) return 1 ;;
+    esac
+    [ "${#1}" -le 32 ]
+}
+
+secure_file() {
+    [ -f "$1" ] && [ ! -L "$1" ] &&
+        [ "$(stat -c '%u:%a' "$1")" = 0:600 ] || fail "unsafe account state file"
+}
+
+read_pending() {
+    secure_file "$pending_file"
+    pending=$(cat "$pending_file")
+    pending_uid=${pending%%:*}
+    pending_name=${pending#*:}
+    case "$pending_uid" in ''|*[!0-9]*) fail "invalid pending account UID" ;; esac
+    [ "$pending_uid" -ge 1000 ] && [ "$pending_uid" -ne 65534 ] || fail "invalid pending account UID"
+    [ "$pending" != "$pending_name" ] && valid_name "$pending_name" || fail "invalid pending account name"
+}
+
+complete() {
+    [ -e "$pending_file" ] || return 0
+    read_pending
+    secure_file "$active_file"
+    active_name=$(cat "$active_file")
+    valid_name "$active_name" || fail "invalid active account name"
+    active_entry=$(getent passwd "$active_name") || fail "active account does not exist"
+    [ "$(printf '%s\n' "$active_entry" | cut -d: -f1)" = "$active_name" ] &&
+        [ "$(printf '%s\n' "$active_entry" | cut -d: -f3)" = "$pending_uid" ] ||
+        fail "active account does not match the pending account UID"
+
+    # Keep pending until all actions succeed, so a restart resumes incomplete
+    # cleanup without reopening account creation or changing boot/display mode.
+    rm -f "$piwiz_file" "$root/etc/sudoers.d/010_wiz-nopasswd"
+    if getent passwd rpi-first-boot-wizard >/dev/null 2>&1; then
+        userdel --remove rpi-first-boot-wizard
+    fi
+    rm -f "$banner_file" "$root/var/lib/userconf-pi/autologin"
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl cat userconfig.service >/dev/null 2>&1; then
+            systemctl disable userconfig.service
+        fi
+        if systemctl is-active --quiet ssh.service; then
+            systemctl reload ssh.service
+        fi
+    fi
+    rm -f "$pending_file"
+    sync -f "$state_dir"
+}
+
+[ "$(id -u)" = 0 ] || fail "root privileges are required"
+[ ! -L "$state_dir" ] || fail "unsafe state directory"
+if [ ! -d "$state_dir" ]; then
+    mkdir -p "$state_dir"
+fi
+[ "$(stat -c '%u:%a' "$state_dir")" = 0:700 ] || fail "unsafe state directory"
+
+case "${1:-prepare}" in
+    prepare)
+        if [ -e "$pending_file" ] || [ -L "$pending_file" ]; then
+            read_pending
+            # A previous prepare may have failed to flush its new marker.
+            sync -f "$state_dir"
+            if [ -e "$progress_file" ] || [ -L "$progress_file" ]; then
+                # Full setup owns cleanup after region, account, network and
+                # updates. An active account alone is only the second step.
+                secure_file "$progress_file"
+            elif [ -e "$active_file" ] || [ -L "$active_file" ]; then
+                complete
+            fi
+            exit 0
+        fi
+        # Upgrades of an already selected Launcher identity never select or
+        # rename another account. New images have no active-user state.
+        if [ -e "$active_file" ] || [ -L "$active_file" ]; then
+            secure_file "$active_file"
+            exit 0
+        fi
+        if [ ! -f "$banner_file" ] && [ ! -f "$piwiz_file" ] &&
+           ! { command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet userconfig.service; }; then
+            exit 0
+        fi
+        source_entry=$(getent passwd 1000) || fail "pi-gen's original account is unavailable"
+        source_name=$(printf '%s\n' "$source_entry" | cut -d: -f1)
+        source_uid=$(printf '%s\n' "$source_entry" | cut -d: -f3)
+        valid_name "$source_name" && [ "$source_uid" = 1000 ] || fail "invalid pi-gen account"
+        temp_file=$(mktemp "$state_dir/.first-boot-pending.XXXXXX")
+        trap 'rm -f "$temp_file"' EXIT HUP INT TERM
+        printf '%s:%s\n' "$source_uid" "$source_name" > "$temp_file"
+        chmod 0600 "$temp_file"
+        ln "$temp_file" "$pending_file"
+        rm "$temp_file"
+        # Preserve the original name across power loss before usermod can
+        # change the account databases or move its home directory.
+        sync -f "$state_dir"
+        trap - EXIT HUP INT TERM
+        ;;
+    complete) complete ;;
+    *) fail "usage: $0 [prepare|complete]" ;;
+esac

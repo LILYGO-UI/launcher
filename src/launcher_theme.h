@@ -15,7 +15,21 @@ inline constexpr uint32_t kPanelShadow         = 0x000000;
 inline constexpr uint32_t kTilePressedOverlay  = 0x000000;
 inline constexpr uint32_t kControlBackground   = 0xe6e8ec;
 inline constexpr uint32_t kControlPressed      = 0xd8dbe1;
+inline constexpr uint32_t kControlTrack        = 0xc7c9cf;
+inline constexpr uint32_t kControlIcon         = 0x48484a;
+/* Keyboard focus follows the iOS system-blue accessibility treatment. */
+inline constexpr uint32_t kControlFocus        = 0x007aff;
+inline constexpr uint32_t kDestructive          = 0xff3b30;
 inline constexpr uint32_t kControlAccent       = 0x19766f;
+/* Account screens use the iOS system-blue family without changing the
+ * launcher's existing teal accent used by quick controls and app tiles. */
+inline constexpr uint32_t kAccountAccent       = 0x007aff;
+inline constexpr uint32_t kAccountAccentPressed = 0x006fe6;
+inline constexpr uint32_t kAccountFieldBackground = 0xf2f2f7;
+inline constexpr uint32_t kAccountFieldBorder = 0xd1d1d6;
+inline constexpr uint32_t kAccountPlaceholder  = 0x8e8e93;
+inline constexpr uint32_t kAccountError        = 0xff3b30;
+inline constexpr uint32_t kAccountKeyboard    = 0xe5e5ea;
 inline constexpr uint32_t kIndicatorActive     = 0x18181a;
 inline constexpr uint32_t kIndicatorInactive   = 0x8e8e93;
 

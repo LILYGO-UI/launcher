@@ -2,6 +2,7 @@
 /.lpm/
 /.venv/
 /.vscode/
+/.target-board.env
 /build/
 /dist/
 /publish.json

@@ -1,6 +1,7 @@
 // Compile the production controller against resource-checking LVGL/UI doubles.
 // No real display, input device, SDK library or application process is used.
 #include "display_session.h"
+#include "keyboard_device.h"
 #include "logging.h"
 
 #include <assert.h>
@@ -28,9 +29,15 @@ struct lv_display_t {
 };
 struct lv_indev_t {
     bool alive = true;
+    bool tca8418 = false;
+    bool invalidated = false;
     lv_display_t *display;
+    int type = LV_INDEV_TYPE_POINTER;
+    lv_group_t *group = nullptr;
     DeleteHook hook;
+    DeleteHook key_hook;
 };
+struct lv_group_t {};
 struct launcher_ui {
     bool alive = true;
     lv_display_t *display;
@@ -53,6 +60,8 @@ struct State {
     std::vector<std::string> events;
     lv_display_t *display = nullptr;
     lv_indev_t *input     = nullptr;
+    lv_indev_t *keyboard  = nullptr;
+    lv_group_t *group     = nullptr;
     lv_obj_t screen;
     bool timers          = true;
     bool fail_create     = false;
@@ -62,6 +71,16 @@ struct State {
     bool fail_suspend    = false;
     bool fail_resume     = false;
     bool external_delete = false;
+    bool ordinary_keyboard_present = false;
+    bool tca8418_present = false;
+    bool tca8418_configured = true;
+    bool fail_keyboard_recovery = false;
+    bool fail_keyboard = false;
+    bool keyboard_pressed = false;
+    int keyboard_scans = 0;
+    int keyboard_attempts = 0;
+    int keyboard_recoveries = 0;
+    int display_queries  = 0;
     int rotations        = 0;
     int refreshes        = 0;
     int rebinds          = 0;
@@ -83,13 +102,14 @@ void reset()
     for (const auto &display : state.displays) assert(!display->alive);
     for (const auto &input : state.inputs) assert(!input->alive);
     for (const auto &ui : state.uis) assert(!ui->alive);
+    assert(!state.group);
     state = State{};
     unsetenv("LILYGO_UI_DRM_RECREATE");
 }
 
 launcher_process_options_t options(const char *backend = "drm")
 {
-    return {backend, "/dev/fb0", "/dev/dri/card0", 44, "/dev/input/test", "portrait", 568, 1232};
+    return {backend, "/dev/fb0", "/dev/dri/card0", 44, "/dev/input/test", "portrait", 568, 1232, nullptr};
 }
 
 void assert_order(const char *first, const char *second)
@@ -251,6 +271,335 @@ void fbdev_and_external_deletion()
     }
     reset();
 }
+
+void assert_keyboard_bound()
+{
+    assert(state.keyboard && state.keyboard->alive);
+    assert(state.keyboard->display == state.display);
+    assert(state.keyboard->group && state.keyboard->group == state.group);
+    assert(state.keyboard->hook.callback && state.keyboard->key_hook.callback);
+}
+
+void assert_manual_orientations(launcher::DisplaySession &session)
+{
+    for (auto orientation : {LAUNCHER_ORIENTATION_LANDSCAPE, LAUNCHER_ORIENTATION_PORTRAIT}) {
+        session.set_orientation(orientation);
+        const int rotations = state.rotations;
+        const int refreshes = state.refreshes;
+        for (int poll = 0; poll < 3; ++poll) {
+            session.poll_keyboard();
+            assert(session.orientation() == orientation);
+        }
+        assert(state.rotations == rotations && state.refreshes == refreshes);
+    }
+}
+
+void keyboard_startup_and_manual_orientation()
+{
+    // A keyboard supported by AppKit need not be the detachable TCA8418.
+    for (int keyboard = 0; keyboard < 3; ++keyboard) {
+        reset();
+        state.ordinary_keyboard_present = keyboard == 1;
+        state.tca8418_present = keyboard == 2;
+        {
+            launcher::DisplaySession session(options(), nullptr);
+            assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+            assert(session.tca8418_present() == (keyboard == 2));
+            assert(session.orientation() == (keyboard == 2 ? LAUNCHER_ORIENTATION_LANDSCAPE
+                                                          : LAUNCHER_ORIENTATION_PORTRAIT));
+            if (keyboard) assert_keyboard_bound();
+            else assert(!state.keyboard);
+            auto *original_keyboard = state.keyboard;
+            const int attempts = state.keyboard_attempts;
+            assert_manual_orientations(session);
+            assert(state.keyboard == original_keyboard && state.keyboard_recoveries == 0);
+            if (keyboard) assert(state.keyboard_attempts == attempts);
+        }
+        reset();
+    }
+}
+
+void keyboard_hotplug_and_open_retry()
+{
+    reset();
+    {
+        launcher::DisplaySession session(options(), nullptr);
+        // No display means there is no input owner to poll or reopen yet.
+        session.poll_keyboard();
+        assert(state.keyboard_scans == 0 && state.keyboard_attempts == 0);
+        assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+        auto *pointer = state.input;
+
+        state.ordinary_keyboard_present = true;
+        session.poll_keyboard();
+        assert_keyboard_bound();
+        assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+        state.ordinary_keyboard_present = false;
+        lv_indev_delete(state.keyboard);
+        session.poll_keyboard();
+        assert(!state.keyboard && state.input == pointer && pointer->alive);
+
+        // Detection must not depend on successfully opening the event device.
+        state.tca8418_present = true;
+        state.fail_keyboard = true;
+        session.poll_keyboard();
+        assert(session.tca8418_present());
+        assert(!state.keyboard && session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+        const int attempts = state.keyboard_attempts;
+        session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+        session.poll_keyboard();
+        assert(state.keyboard_attempts == attempts + 1);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+
+        // A delayed open retries and clears stale UI key state without turning
+        // a continuously connected keyboard into another orientation event.
+        state.fail_keyboard = false;
+        state.keyboard_pressed = true;
+        const int rebinds = state.rebinds;
+        session.poll_keyboard();
+        assert_keyboard_bound();
+        assert(state.rebinds == rebinds + 1 && !state.keyboard_pressed);
+        assert(state.input == pointer && session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+        assert_manual_orientations(session);
+
+        // Driver-side input deletion/recreation is not a physical reconnect.
+        auto *old_keyboard = state.keyboard;
+        lv_indev_delete(old_keyboard);
+        session.poll_keyboard();
+        assert_keyboard_bound();
+        assert(state.keyboard != old_keyboard && state.input == pointer);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+
+        session.set_orientation(LAUNCHER_ORIENTATION_LANDSCAPE);
+        state.tca8418_present = false;
+        // Detection can notice removal before the evdev driver's delete event.
+        old_keyboard = state.keyboard;
+        session.poll_keyboard();
+        assert(!session.tca8418_present());
+        assert(old_keyboard->alive && state.keyboard == old_keyboard);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+        lv_indev_delete(state.keyboard);
+        session.poll_keyboard();
+        assert(!state.keyboard && session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+        assert_manual_orientations(session);
+
+        // Only a fresh physical connection overrides the last manual choice.
+        assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+        state.tca8418_present = true;
+        session.poll_keyboard();
+        assert_keyboard_bound();
+        assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+    }
+    reset();
+}
+
+void assert_paused_keyboard_poll(launcher::DisplaySession &session)
+{
+    assert(!state.timers);
+    const int scans = state.keyboard_scans;
+    const int attempts = state.keyboard_attempts;
+    const int queries = state.display_queries;
+    const int rotations = state.rotations;
+    const int refreshes = state.refreshes;
+    const int rebinds = state.rebinds;
+    auto *display = state.display;
+    auto *keyboard = state.keyboard;
+    auto *pointer = state.input;
+    auto *group = state.group;
+    const auto rotation = display ? display->rotation : LV_DISPLAY_ROTATION_0;
+    session.poll_keyboard();
+    assert(state.keyboard_scans == scans + 1);
+    assert(state.keyboard_attempts == attempts);
+    assert(state.display_queries == queries && state.rotations == rotations);
+    assert(state.refreshes == refreshes && state.rebinds == rebinds);
+    assert(state.display == display && state.keyboard == keyboard);
+    assert(state.input == pointer && state.group == group && !state.timers);
+    if (display) assert(display->rotation == rotation);
+}
+
+void keyboard_orientation_across_suspend()
+{
+    for (const char *backend : {"drm", "fbdev"}) {
+        for (bool forced_recreation : {false, true}) {
+            reset();
+            if (forced_recreation) setenv("LILYGO_UI_DRM_RECREATE", "1", 1);
+            state.tca8418_present = true;
+            {
+                launcher::DisplaySession session(options(backend), nullptr);
+                assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+                assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+                session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+                for (int cycle = 0; cycle < 2; ++cycle) {
+                    session.suspend();
+                    // A continuously connected keyboard cannot override the
+                    // manual choice when returning from an application.
+                    assert_paused_keyboard_poll(session);
+                    assert(session.resume());
+                    assert_keyboard_bound();
+                    assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+                }
+
+                session.suspend();
+                state.tca8418_present = false;
+                if (state.keyboard) lv_indev_delete(state.keyboard);
+                assert_paused_keyboard_poll(session);
+                assert(session.resume());
+                assert(!state.keyboard && session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+
+                session.suspend();
+                state.tca8418_present = true;
+                assert_paused_keyboard_poll(session);
+                assert(session.resume());
+                assert_keyboard_bound();
+                assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+            }
+            reset();
+        }
+    }
+}
+
+void keyboard_reconnect_while_suspended()
+{
+    for (bool forced_recreation : {false, true}) {
+        for (bool disconnect_again : {false, true}) {
+            reset();
+            if (forced_recreation) setenv("LILYGO_UI_DRM_RECREATE", "1", 1);
+            state.tca8418_present = true;
+            {
+                launcher::DisplaySession session(options(), nullptr);
+                assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+                session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+                session.suspend();
+                assert(session.retained() == (supports_handoff && !forced_recreation));
+                assert(session.alive() == session.retained());
+                state.tca8418_present = false;
+                assert_paused_keyboard_poll(session);
+                state.tca8418_present = true;
+                assert_paused_keyboard_poll(session);
+                // The new connection is remembered even after another poll
+                // observes it continuously present, or it is removed again.
+                if (disconnect_again) state.tca8418_present = false;
+                assert_paused_keyboard_poll(session);
+                assert(session.resume());
+                assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+                if (disconnect_again) assert(!state.keyboard);
+                else assert_keyboard_bound();
+
+                // Consume the pending change once. A later manual selection
+                // must survive polling and another complete app handoff.
+                session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+                session.poll_keyboard();
+                assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+                session.suspend();
+                assert_paused_keyboard_poll(session);
+                assert(session.resume());
+                assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+            }
+            reset();
+        }
+    }
+}
+
+void keyboard_power_loss_recovery()
+{
+    // Unbinding the kernel driver invalidates its event device. LVGL reports
+    // deletion asynchronously when it next reads the old device, not inside
+    // the detector. Keep that ownership boundary visible to the controller.
+    for (bool observe_removal : {false, true}) {
+        reset();
+        state.tca8418_present = true;
+        {
+            launcher::DisplaySession session(options(), nullptr);
+            assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+            auto *old_keyboard = state.keyboard;
+            auto *pointer = state.input;
+            auto *group = state.group;
+            const int attempts = state.keyboard_attempts;
+            session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+            state.tca8418_configured = false;
+            if (observe_removal) {
+                state.tca8418_present = false;
+                session.poll_keyboard();
+                assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+                assert(old_keyboard->alive && !old_keyboard->invalidated);
+                assert(state.keyboard_recoveries == 0);
+                state.tca8418_present = true;
+            }
+
+            session.poll_keyboard();
+            assert(state.keyboard_recoveries == 1 && state.tca8418_configured);
+            assert(state.keyboard == old_keyboard && old_keyboard->alive && old_keyboard->invalidated);
+            assert(state.keyboard_attempts == attempts);
+            const auto expected_orientation = observe_removal ? LAUNCHER_ORIENTATION_LANDSCAPE
+                                                             : LAUNCHER_ORIENTATION_PORTRAIT;
+            assert(session.orientation() == expected_orientation);
+
+            state.keyboard_pressed = true;
+            lv_indev_delete(old_keyboard);
+            state.events.clear();
+            const int rebinds = state.rebinds;
+            session.poll_keyboard();
+            assert_keyboard_bound();
+            assert(state.keyboard != old_keyboard && !state.keyboard->invalidated);
+            assert(state.group == group && state.input == pointer && pointer->alive);
+            assert(state.keyboard_attempts == attempts + 1 && state.keyboard_recoveries == 1);
+            assert(state.rebinds == rebinds + 1 && !state.keyboard_pressed);
+            assert(session.orientation() == expected_orientation);
+            assert_order("keyboard-update", "keyboard-create");
+            assert_order("keyboard-create", "ui-rebind");
+            assert_manual_orientations(session);
+        }
+        reset();
+    }
+}
+
+void keyboard_recovery_retry_and_usb_ownership()
+{
+    reset();
+    {
+        launcher::DisplaySession session(options(), nullptr);
+        assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+        state.tca8418_present = true;
+        state.tca8418_configured = false;
+        state.fail_keyboard_recovery = true;
+        session.poll_keyboard();
+        assert(!state.keyboard && state.keyboard_recoveries == 1);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+        session.set_orientation(LAUNCHER_ORIENTATION_PORTRAIT);
+        for (int retry = 0; retry < 3; ++retry) {
+            session.poll_keyboard();
+            assert(!state.keyboard && state.keyboard_recoveries == retry + 2);
+            assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+        }
+        state.fail_keyboard_recovery = false;
+        state.events.clear();
+        session.poll_keyboard();
+        assert_keyboard_bound();
+        assert(state.tca8418_configured && state.keyboard_recoveries == 5);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_PORTRAIT);
+        assert_order("keyboard-recover", "keyboard-create");
+    }
+    reset();
+
+    state.ordinary_keyboard_present = true;
+    {
+        launcher::DisplaySession session(options(), nullptr);
+        assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+        auto *usb_keyboard = state.keyboard;
+        const int attempts = state.keyboard_attempts;
+        assert(usb_keyboard && !usb_keyboard->tca8418);
+        state.tca8418_present = true;
+        state.tca8418_configured = false;
+        session.poll_keyboard();
+        assert(state.keyboard_recoveries == 1 && state.tca8418_configured);
+        assert(state.keyboard == usb_keyboard && usb_keyboard->alive && !usb_keyboard->invalidated);
+        assert(state.keyboard_attempts == attempts);
+        assert(session.orientation() == LAUNCHER_ORIENTATION_LANDSCAPE);
+        assert_keyboard_bound();
+        assert_manual_orientations(session);
+    }
+    reset();
+}
 }  // namespace
 
 lv_display_t *lv_linux_drm_create()
@@ -296,6 +645,7 @@ void lv_display_delete(lv_display_t *display)
 lv_display_rotation_t lv_display_get_rotation(lv_display_t *display)
 {
     assert(display && display->alive);
+    ++state.display_queries;
     return display->rotation;
 }
 void lv_display_set_rotation(lv_display_t *display, lv_display_rotation_t rotation)
@@ -322,20 +672,102 @@ lv_indev_t *lv_evdev_create(int type, const char *)
     state.events.emplace_back("input-create");
     return state.input;
 }
+extern "C" lv_indev_t *cm0_input_create_pointer(const char *path)
+{
+    return lv_evdev_create(LV_INDEV_TYPE_POINTER, path);
+}
+extern "C" lv_indev_t *cm0_input_create_keyboard(bool *present)
+{
+    assert(state.display && state.display->alive && !state.keyboard);
+    ++state.keyboard_attempts;
+    const bool connected = state.ordinary_keyboard_present ||
+                           (state.tca8418_present && state.tca8418_configured);
+    if (present) *present = connected;
+    if (!connected || state.fail_keyboard) return nullptr;
+    state.inputs.push_back(std::make_unique<lv_indev_t>());
+    state.keyboard = state.inputs.back().get();
+    state.keyboard->display = state.display;
+    state.keyboard->type = LV_INDEV_TYPE_KEYPAD;
+    state.keyboard->tca8418 = !state.ordinary_keyboard_present;
+    state.events.emplace_back("keyboard-create");
+    return state.keyboard;
+}
+
+extern "C" bool cm0_input_keyboard_present()
+{
+    return state.ordinary_keyboard_present || state.tca8418_present;
+}
+namespace launcher {
+bool update_tca8418_keyboard(const char *, const char *, const char *, int (*)(const char *, unsigned int))
+{
+    ++state.keyboard_scans;
+    state.events.emplace_back("keyboard-update");
+    if (state.tca8418_present && !state.tca8418_configured) {
+        ++state.keyboard_recoveries;
+        if (!state.fail_keyboard_recovery) {
+            state.tca8418_configured = true;
+            state.events.emplace_back("keyboard-recover");
+            if (state.keyboard && state.keyboard->tca8418) state.keyboard->invalidated = true;
+        }
+    }
+    return state.tca8418_present;
+}
+}
 void lv_indev_add_event_cb(lv_indev_t *input, lv_event_cb_t cb, int code, void *data)
 {
-    assert(input->alive && code == LV_EVENT_DELETE);
-    input->hook = {cb, data};
+    assert(input->alive);
+    if (code == LV_EVENT_DELETE) input->hook = {cb, data};
+    else {
+        assert(input->type == LV_INDEV_TYPE_KEYPAD && code == LV_EVENT_KEY);
+        input->key_hook = {cb, data};
+    }
 }
 void lv_indev_delete(lv_indev_t *input)
 {
     assert(input && input->alive);
     input->alive = false;
-    state.input  = nullptr;
-    state.events.emplace_back("input-delete");
+    if (input->type == LV_INDEV_TYPE_KEYPAD) {
+        assert(state.keyboard == input);
+        state.keyboard = nullptr;
+        state.events.emplace_back("keyboard-delete");
+    } else {
+        assert(state.input == input);
+        state.input = nullptr;
+        state.events.emplace_back("input-delete");
+    }
     for (const auto &ui : state.uis)
         if (ui->alive && ui->input == input) ui->input = nullptr;
     notify_delete(input->hook);
+}
+void lv_indev_set_group(lv_indev_t *input, lv_group_t *group)
+{
+    assert(input && input->alive && group == state.group);
+    input->group = group;
+}
+lv_indev_state_t lv_indev_get_state(const lv_indev_t *)
+{
+    return LV_INDEV_STATE_RELEASED;
+}
+uint32_t lv_indev_get_key(const lv_indev_t *)
+{
+    return 0;
+}
+void lv_indev_stop_processing(lv_indev_t *)
+{
+}
+lv_group_t *lv_group_create()
+{
+    assert(!state.group);
+    return new lv_group_t;
+}
+void lv_group_set_default(lv_group_t *group)
+{
+    state.group = group;
+}
+void lv_group_delete(lv_group_t *group)
+{
+    assert(group && group != state.group);
+    delete group;
 }
 #if LV_LINUX_DRM_USE_EGL && defined(LILYGO_UI_HAS_DRM_HANDOFF)
 lv_result_t lv_linux_drm_suspend(lv_display_t *display)
@@ -396,15 +828,21 @@ extern "C" void launcher_ui_destroy(launcher_ui_t *ui)
 }
 extern "C" void launcher_ui_rebind_input(launcher_ui_t *ui)
 {
-    assert(ui && ui->alive && ui->display == state.display && !ui->input);
+    assert(ui && ui->alive && ui->display == state.display);
+    assert(!ui->input || ui->input->alive);
     assert(!state.input || state.input->display == ui->display);
     ui->input = state.input;
+    state.keyboard_pressed = false;
     ++state.rebinds;
     state.events.emplace_back("ui-rebind");
 }
 extern "C" void launcher_ui_apply_orientation(launcher_ui_t *ui, launcher_orientation_t)
 {
     assert(ui && ui->alive && ui->display->alive);
+}
+extern "C" bool launcher_ui_handle_keyboard_input(launcher_ui_t *, lv_indev_t *)
+{
+    return false;
 }
 namespace launcher::logging {
 void info(const char *, ...) noexcept
@@ -424,6 +862,12 @@ int main()
     recreation_fallbacks();
     failed_recreation_cleanup();
     fbdev_and_external_deletion();
-    std::cout << "DisplaySession ownership, handoff and recovery passed (EGL=" << LV_LINUX_DRM_USE_EGL
+    keyboard_startup_and_manual_orientation();
+    keyboard_hotplug_and_open_retry();
+    keyboard_orientation_across_suspend();
+    keyboard_reconnect_while_suspended();
+    keyboard_power_loss_recovery();
+    keyboard_recovery_retry_and_usb_ownership();
+    std::cout << "DisplaySession ownership, handoff, recovery and keyboard orientation passed (EGL=" << LV_LINUX_DRM_USE_EGL
               << ", handoff=" << supports_handoff << ")\n";
 }

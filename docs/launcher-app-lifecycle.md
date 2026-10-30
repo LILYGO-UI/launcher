@@ -172,9 +172,16 @@ evdev，避免 APP 运行期间的触摸积累到返回后的事件队列，再�
 | `--fbdev` | framebuffer 设备节点 |
 | `--input` | evdev 输入设备节点 |
 
-`execv()` 保留 Launcher 的环境变量、当前工作目录、用户/组、标准输入输出和未设置
-close-on-exec 的文件描述符。当前实现没有额外权限降级、namespace、seccomp 或
-cgroup 限额；APP 以 Launcher 服务的权限访问设备和文件。
+`execv()` 保留当前工作目录、标准输入输出和未设置 close-on-exec 的文件描述符。
+设备 Launcher 在首次使用页通过 PAM 创建或认证一个普通账户；子进程在
+`execv()` 前调用 `initgroups()`、`setgid()` 和 `setuid()`，因此 APP 使用登录账户的
+UID、GID 和附加硬件组访问设备。`HOME`、`SHELL`、`USER`、`LOGNAME` 以及 XDG 配置、
+数据、缓存、状态和运行时目录从该账户重建，root 的动态加载器和包管理环境变量会被清理。
+服务配置的[私有 Mesa VC4 运行库](graphics-rendering.md#私有-mesa-vc4-运行库)仅在两个
+固定路径精确配对时保留，避免 GBM 后端与 Gallium 的加载路径分离。
+Launcher 服务仍由 root 拥有 DRM/KMS 和控制台；APP 使用经 PAM 认证的登录账户身份，
+并按系统现有 sudo/polkit 策略请求需要的特权操作。需要修改 SSH 或 Serial Console 等
+系统配置的 APP 应调用受限的 root helper 或 systemd 服务；不要让整个 GUI 以 root UID 运行。
 
 ## APP 生命周期
 

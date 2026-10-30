@@ -3,6 +3,7 @@
 
 #include "process.h"
 #include "ui.h"
+#include <cm0/input.h>
 
 namespace launcher {
 
@@ -20,7 +21,16 @@ public:
     bool alive() const;
     launcher_ui_t *ui() const;
     launcher_orientation_t orientation() const;
+    // True when the detachable CM0 TCA8418 keyboard is currently present.
+    // This is kept separate from generic evdev keyboard discovery so the
+    // account screen can suppress its software keyboard only for the
+    // hardware keypad.
+    bool tca8418_present() const;
     void set_orientation(launcher_orientation_t orientation);
+    // Only a new TCA8418 connection selects landscape. Manual rotation and
+    // disconnects preserve the selected direction until the next connection.
+    // While suspended, only hardware/state are updated; rotation waits for resume.
+    void poll_keyboard();
     void refresh();
     void refresh_ready();
 
@@ -34,9 +44,12 @@ public:
 private:
     static void display_deleted(lv_event_t *event);
     static void input_deleted(lv_event_t *event);
+    static void keyboard_deleted(lv_event_t *event);
+    static void keyboard_event(lv_event_t *event);
     bool uses_drm() const;
     bool create_display();
     void open_input();
+    void open_keyboard();
     void close_input();
     void clear_display();
     bool create_ui();
@@ -46,12 +59,17 @@ private:
     launcher_registry_t *registry_;
     lv_display_t *display_              = nullptr;
     lv_indev_t *input_                  = nullptr;
+    lv_indev_t *keyboard_               = nullptr;
+    lv_group_t *input_group_            = nullptr;
     launcher_ui_t *ui_                  = nullptr;
     launcher_orientation_t orientation_ = LAUNCHER_ORIENTATION_PORTRAIT;
     bool retained_                      = false;
     bool paused_                        = false;
 #if defined(LAUNCHER_SIMULATOR)
     bool sdl_initialized_ = false;
+#else
+    bool tca8418_present_ = false;
+    bool tca8418_landscape_pending_ = false;
 #endif
 };
 

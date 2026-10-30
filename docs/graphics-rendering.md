@@ -54,9 +54,8 @@ OpenGLES 在逻辑画布中完成纹理合成，再将画面旋转到原生显�
 完整逻辑帧旋转写入 scanout 缓冲。NanoVG 的根层绘制和裁剪使用原生窗口坐标，
 子离屏层保持逻辑坐标。SDL 模拟器通过交换窗口宽高呈现横屏预览。
 
-当前 Launcher 横屏使用 `LV_DISPLAY_ROTATION_90`，AppKit 应用运行时使用
-`LV_DISPLAY_ROTATION_270`。测试必须与被测构建的实际旋转配置一致，尤其是底部
-上划退出的输入坐标；不能从 Launcher 的旋转值推断应用值。方向未改变时，不重复
+Launcher 和 AppKit 应用横屏统一使用 `LV_DISPLAY_ROTATION_90`。测试必须与被测构建的实际旋转配置一致，尤其是底部
+上划退出的输入坐标；Launcher 传给应用的横屏参数必须保持这一旋转约定。方向未改变时，不重复
 调用 `lv_display_set_rotation()`，避免 LVGL 再次发出分辨率事件并触发纹理重建。
 
 evdev 按每个完整的指针 `SYN_REPORT` 向 LVGL 提交一次采样。冷帧或显示重建可能
@@ -105,7 +104,8 @@ evdev 按每个完整的指针 `SYN_REPORT` 向 LVGL 提交一次采样。冷帧
 
 私有 `lilygo-ui-mesa-vc4` 针对 VC4、DRM 和 GLES2 提供配套 GBM/EGL/GLES2/Gallium
 库。它与系统 Mesa 并存，由产品镜像或服务配置决定哪些进程使用；Launcher 启动的
-子应用继承服务环境。AppKit 和 Launcher 不承担 Mesa 源码构建或运行库打包。
+子应用在切换到登录用户后继续使用该运行库。AppKit 和 Launcher 不承担 Mesa 源码构建
+或运行库打包。
 
 该方案针对应用进入时的驱动加载成本。2026-09-17 的分段计时发现
 `gbm_create_device()` 耗时约 150–1400 ms，通用 Gallium 引入 LLVM、Z3 及大量
@@ -120,6 +120,11 @@ Wayland 等未使用能力，私有安装体积约 17 MiB。通用依赖文件�
 Environment="LD_LIBRARY_PATH=/usr/lib/lilygo-ui/mesa-vc4/lib"
 Environment="GBM_BACKENDS_PATH=/usr/lib/lilygo-ui/mesa-vc4/lib/gbm"
 ```
+
+Launcher 清理用户进程的 `LD_*` 环境变量时，只为上述两个精确匹配的路径恢复固定的
+`LD_LIBRARY_PATH`，保证 GBM 后端能够加载同一套 Gallium 库。包含其他目录或空条目的
+搜索路径不会保留，`LD_PRELOAD` 等变量仍会清理。缺少此配对会导致 NES 等 GLES 应用在
+启动时报告找不到 `libgallium`，随后显示初始化失败。
 
 这个运行库不提供通用桌面 OpenGL、X11、Wayland 或视频编解码能力。接入前核对
 服务及子应用的图形需求，并通过进程映射确认实际加载的库。构建、源码锁定、ELF

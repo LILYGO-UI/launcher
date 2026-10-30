@@ -20,6 +20,9 @@
 #define COLOR_CONTAINER_BACKGROUND 0xffffff
 #define COLOR_CONTAINER_TITLE      0x1a1a1a
 #define COLOR_TEXT                 0x000000
+#define COLOR_CONTROL_BACKGROUND   0xe6e8ec
+#define COLOR_CONTROL_PRESSED      0xd8dbe1
+#define COLOR_CONTROL_FOCUS        0x007aff
 
 static lv_color32_t *framebuffer;
 static lv_color32_t *status_snapshot;
@@ -67,6 +70,24 @@ static void render(lv_display_t *display, const char *path)
     lv_tick_inc(20);
     lv_refr_now(display);
     write_ppm(path, lv_display_get_horizontal_resolution(display), lv_display_get_vertical_resolution(display));
+}
+
+static void assert_file_share_content_fits(lv_obj_t *screen)
+{
+    lv_obj_t *panel = lv_obj_find_by_name(screen, "file_share_panel");
+    assert(panel);
+    lv_obj_update_layout(screen);
+    lv_area_t bounds;
+    lv_obj_get_coords(panel, &bounds);
+    const char *names[] = {"file_share_title", "file_share_path", "file_share_status", "file_share_close_button"};
+    for (unsigned index = 0; index < sizeof(names) / sizeof(names[0]); ++index) {
+        lv_obj_t *child = lv_obj_find_by_name(panel, names[index]);
+        lv_area_t area;
+        assert(child);
+        lv_obj_get_coords(child, &area);
+        assert(area.x1 >= bounds.x1 && area.x2 <= bounds.x2);
+        assert(area.y1 >= bounds.y1 && area.y2 <= bounds.y2);
+    }
 }
 
 static void snapshot_status_region(void)
@@ -153,18 +174,668 @@ static uint32_t active_page_index(lv_obj_t *pages)
     return lv_obj_get_index(active);
 }
 
+static void assert_session_actions_fit(lv_obj_t *screen)
+{
+    lv_obj_t *panel = lv_obj_find_by_name(screen, "quick_panel");
+    lv_obj_t *controls[] = {
+        lv_obj_find_by_name(screen, "orientation_button"),
+        lv_obj_find_by_name(screen, "file_share_button"),
+        lv_obj_find_by_name(screen, "lock_button"),
+        lv_obj_find_by_name(screen, "session_button"),
+    };
+    lv_obj_t *labels[] = {
+        lv_obj_find_by_name(screen, "orientation_label"),
+        lv_obj_find_by_name(screen, "file_share_label"),
+        lv_obj_find_by_name(screen, "lock_label"),
+        lv_obj_find_by_name(screen, "session_label"),
+    };
+    lv_obj_t *handle = lv_obj_find_by_name(screen, "quick_panel_handle");
+    assert(panel && handle);
+    lv_area_t panel_area, handle_area, control_areas[4];
+    lv_obj_get_coords(panel, &panel_area);
+    lv_obj_get_coords(handle, &handle_area);
+    assert(handle_area.y2 <= panel_area.y2);
+    for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); ++i) {
+        assert(controls[i] && labels[i]);
+        assert(!lv_obj_has_flag(controls[i], LV_OBJ_FLAG_HIDDEN));
+        lv_area_t *control_area = &control_areas[i];
+        lv_area_t label_area;
+        lv_obj_get_coords(controls[i], control_area);
+        lv_obj_get_coords(labels[i], &label_area);
+        assert(lv_area_get_width(control_area) == lv_area_get_width(&control_areas[0]));
+        assert(lv_area_get_height(control_area) == lv_area_get_height(&control_areas[0]));
+        assert(control_area->x1 >= panel_area.x1 && control_area->x2 <= panel_area.x2);
+        /* Cards live in a scrolling content viewport.  On compact displays
+         * lower cards may extend beneath the fixed handle until scrolled into
+         * view; keep the panel bounds and non-overlap checks here and verify
+         * focused outlines against the viewport separately. */
+        assert(control_area->y1 >= panel_area.y1);
+        assert(label_area.x1 >= control_area->x1 && label_area.x2 <= control_area->x2);
+        assert(label_area.y1 >= control_area->y1 && label_area.y2 <= control_area->y2);
+        for (size_t j = 0; j < i; ++j) {
+            const lv_area_t *other_area = &control_areas[j];
+            assert(control_area->x2 < other_area->x1 || other_area->x2 < control_area->x1 ||
+                   control_area->y2 < other_area->y1 || other_area->y2 < control_area->y1);
+        }
+    }
+    assert(strcmp(lv_label_get_text(labels[1]), "File sharing") == 0);
+    assert(strcmp(lv_label_get_text(labels[2]), "Lock screen") == 0);
+}
+
+static bool has_non_label_child(lv_obj_t *parent, lv_obj_t *label)
+{
+    const uint32_t child_count = lv_obj_get_child_count(parent);
+    for (uint32_t i = 0; i < child_count; ++i) {
+        lv_obj_t *child = lv_obj_get_child(parent, (int32_t)i);
+        if (child != label && !lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) return true;
+    }
+    return false;
+}
+
+static void assert_session_action_icons(lv_obj_t *screen)
+{
+    lv_obj_t *lock = lv_obj_find_by_name(screen, "lock_button");
+    lv_obj_t *logout = lv_obj_find_by_name(screen, "session_button");
+    lv_obj_t *share = lv_obj_find_by_name(screen, "file_share_button");
+    lv_obj_t *lock_label = lv_obj_find_by_name(screen, "lock_label");
+    lv_obj_t *logout_label = lv_obj_find_by_name(screen, "session_label");
+    lv_obj_t *lock_icon = lv_obj_find_by_name(screen, "lock_icon");
+    lv_obj_t *logout_icon = lv_obj_find_by_name(screen, "session_icon");
+    lv_obj_t *share_label = lv_obj_find_by_name(screen, "file_share_label");
+    lv_obj_t *share_icon = lv_obj_find_by_name(screen, "file_share_icon");
+    assert(lock && logout && share && lock_label && logout_label && share_label && lock_icon && logout_icon && share_icon);
+    assert(lv_label_get_text(lock_icon) && lv_label_get_text(lock_icon)[0] != '\0');
+    assert(lv_label_get_text(logout_icon) && lv_label_get_text(logout_icon)[0] != '\0');
+    assert(lv_label_get_text(share_icon) && lv_label_get_text(share_icon)[0] != '\0');
+    /* Lock and Sign out are represented by an icon plus their existing text.
+     * Keep the check structural so it remains valid if the icon glyph or
+     * drawing primitive changes with the bundled font set. */
+    assert(has_non_label_child(lock, lock_label));
+    assert(has_non_label_child(logout, logout_label));
+    assert(has_non_label_child(share, share_label));
+}
+
+static void assert_quick_control_style(lv_obj_t *orientation, lv_obj_t *share, lv_obj_t *lock, lv_obj_t *logout)
+{
+    lv_obj_t *controls[] = {orientation, share, lock, logout};
+    for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); ++i) {
+        lv_obj_t *control = controls[i];
+        assert(lv_color_eq(lv_obj_get_style_bg_color(control, LV_PART_MAIN), lv_color_hex(COLOR_CONTROL_BACKGROUND)));
+        assert(lv_obj_get_style_bg_opa(control, LV_PART_MAIN) == LV_OPA_COVER);
+        assert(lv_color_eq(lv_obj_get_style_text_color(control, LV_PART_MAIN), lv_color_hex(COLOR_TEXT)));
+        assert(lv_obj_get_style_border_width(control, LV_PART_MAIN) == 0);
+        assert(lv_obj_get_style_shadow_width(control, LV_PART_MAIN) == 0);
+        assert(lv_obj_get_style_radius(control, LV_PART_MAIN) == 24);
+    }
+}
+
 static void mark_deleted(lv_event_t *event)
 {
     bool *deleted = lv_event_get_user_data(event);
     *deleted      = true;
 }
 
+typedef struct {
+    uint32_t key;
+    lv_indev_state_t state;
+    bool drain_again;
+} keyboard_sample_t;
+
+static void read_keyboard(lv_indev_t *input, lv_indev_data_t *data)
+{
+    keyboard_sample_t *sample = lv_indev_get_user_data(input);
+    data->key                = sample->key;
+    data->state              = sample->state;
+    data->continue_reading   = sample->drain_again;
+    sample->drain_again      = false;
+}
+
+static void keyboard_event(lv_event_t *event)
+{
+    launcher_ui_t *ui = lv_event_get_user_data(event);
+    lv_indev_t *input = lv_event_get_target(event);
+    if (launcher_ui_handle_keyboard_input(ui, input)) lv_indev_stop_processing(input);
+}
+
+static void sample_keyboard(lv_indev_t *input, uint32_t key, lv_indev_state_t state, uint32_t elapsed)
+{
+    keyboard_sample_t *sample = lv_indev_get_user_data(input);
+    sample->key               = key;
+    sample->state             = state;
+    /* evdev returns one key event, then drains SYN_REPORT/EAGAIN in the same
+     * LVGL read. Both samples retain the same key and pressed state. */
+    sample->drain_again = true;
+    lv_tick_inc(elapsed);
+    lv_indev_read(input);
+}
+
+static void settle_focus_render(lv_display_t *display)
+{
+    /* Allow both focus transitions and automatic scrolling to finish before
+     * inspecting the outline, including a scroll started by a layout pass. */
+    for (int i = 0; i < 2; ++i) {
+        lv_tick_inc(300);
+        lv_timer_handler();
+        lv_obj_update_layout(lv_screen_active());
+    }
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(display);
+}
+
+static void assert_focused_outline_visible(lv_display_t *display, lv_obj_t *control, lv_obj_t *viewport)
+{
+    assert(lv_obj_has_state(control, LV_STATE_FOCUS_KEY));
+    settle_focus_render(display);
+    const int32_t outline_width = lv_obj_get_style_outline_width(control, LV_PART_MAIN);
+    const int32_t outline_pad = lv_obj_get_style_outline_pad(control, LV_PART_MAIN);
+    assert(outline_width > 0);
+    assert(lv_obj_get_style_outline_opa(control, LV_PART_MAIN) > LV_OPA_TRANSP);
+    lv_area_t control_area, viewport_area;
+    lv_obj_get_coords(control, &control_area);
+    lv_obj_get_coords(viewport, &viewport_area);
+    const int32_t extent = outline_pad + outline_width;
+    if (control_area.x1 - extent < viewport_area.x1 || control_area.x2 + extent > viewport_area.x2 ||
+        control_area.y1 - extent < viewport_area.y1 || control_area.y2 + extent > viewport_area.y2) {
+        fprintf(stderr,
+                "quick-control focus outline clipped: display=%dx%d control=%s "
+                "control=(%d,%d)-(%d,%d) viewport=(%d,%d)-(%d,%d) extent=%d scroll=(%d,%d)\n",
+                lv_display_get_horizontal_resolution(display), lv_display_get_vertical_resolution(display),
+                lv_obj_get_name(control), control_area.x1, control_area.y1, control_area.x2, control_area.y2,
+                viewport_area.x1, viewport_area.y1, viewport_area.x2, viewport_area.y2, extent,
+                lv_obj_get_scroll_x(viewport), lv_obj_get_scroll_y(viewport));
+        assert(0 && "quick-control focus outline clipped");
+    }
+    assert(control_area.x1 - extent >= viewport_area.x1);
+    assert(control_area.x2 + extent <= viewport_area.x2);
+    assert(control_area.y1 - extent >= viewport_area.y1);
+    assert(control_area.y2 + extent <= viewport_area.y2);
+
+    /* Sample the middle of each straight outline edge, clear of the rounded
+     * corners. Geometry alone cannot detect a parent or corner mask hiding
+     * an otherwise correctly positioned focus ring. */
+    const int32_t offset = outline_pad + (outline_width + 1) / 2;
+    const int32_t center_x = (control_area.x1 + control_area.x2) / 2;
+    const int32_t center_y = (control_area.y1 + control_area.y2) / 2;
+    const lv_point_t samples[] = {
+        {control_area.x1 - offset, center_y},
+        {control_area.x2 + offset, center_y},
+        {center_x, control_area.y1 - offset},
+        {center_x, control_area.y2 + offset},
+    };
+    const int32_t display_width = lv_display_get_horizontal_resolution(display);
+    const int32_t display_height = lv_display_get_vertical_resolution(display);
+    const lv_color_t outline_color = lv_obj_get_style_outline_color(control, LV_PART_MAIN);
+    assert(lv_color_eq(outline_color, lv_color_hex(COLOR_CONTROL_FOCUS)));
+    static const char *edge_names[] = {"left", "right", "top", "bottom"};
+    for (size_t i = 0; i < 4; ++i) {
+        assert(samples[i].x >= 0 && samples[i].x < display_width);
+        assert(samples[i].y >= 0 && samples[i].y < display_height);
+        const lv_color32_t pixel = framebuffer[(size_t)samples[i].y * display_width + samples[i].x];
+        const bool matches = pixel.red == outline_color.red && pixel.green == outline_color.green &&
+                             pixel.blue == outline_color.blue;
+        if (!matches)
+            fprintf(stderr,
+                    "quick-control focus outline missing: display=%dx%d control=%s edge=%s "
+                    "sample=(%d,%d) rgb=(%u,%u,%u) expected=(%u,%u,%u) opacity=%u\n",
+                    display_width, display_height, lv_obj_get_name(control), edge_names[i],
+                    samples[i].x, samples[i].y, pixel.red, pixel.green, pixel.blue,
+                    outline_color.red, outline_color.green, outline_color.blue,
+                    lv_obj_get_style_outline_opa(control, LV_PART_MAIN));
+        assert(matches);
+    }
+}
+
+static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, lv_display_t *display)
+{
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_t *viewport = lv_obj_find_by_name(screen, "quick_controls");
+    lv_obj_t *orientation = lv_obj_find_by_name(screen, "orientation_button");
+    lv_obj_t *share = lv_obj_find_by_name(screen, "file_share_button");
+    lv_obj_t *lock = lv_obj_find_by_name(screen, "lock_button");
+    lv_obj_t *logout = lv_obj_find_by_name(screen, "session_button");
+    lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *brightness = lv_obj_find_by_name(screen, "brightness_slider");
+    lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
+    assert(viewport && orientation && share && lock && logout && power && brightness && volume);
+    assert(!lv_obj_has_flag(lv_obj_find_by_name(screen, "quick_scrim"), LV_OBJ_FLAG_HIDDEN));
+    lv_group_t *controls_group = lv_obj_get_group(orientation);
+    assert(controls_group && controls_group != group);
+    keyboard_sample_t sample = {0, LV_INDEV_STATE_RELEASED, false};
+    lv_indev_t *keyboard = lv_indev_create();
+    assert(keyboard);
+    lv_indev_set_type(keyboard, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_group(keyboard, group);
+    lv_indev_set_user_data(keyboard, &sample);
+    lv_indev_set_read_cb(keyboard, read_keyboard);
+    lv_indev_add_event_cb(keyboard, keyboard_event, LV_EVENT_KEY, ui);
+    lv_timer_pause(lv_indev_get_read_timer(keyboard));
+    lv_group_focus_obj(orientation);
+    /* Complete both cycles: Tab from the last card and Shift+Tab from the
+     * first card must wrap within the open panel instead of reaching apps. */
+    const uint32_t keys[] = {
+        LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT,
+        LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV,
+    };
+    lv_obj_t *expected[] = {
+        share, lock, logout, power, brightness, volume, orientation,
+        volume, brightness, power, logout, lock, share, orientation,
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        sample_keyboard(keyboard, keys[i], LV_INDEV_STATE_PRESSED, 0);
+        sample_keyboard(keyboard, keys[i], LV_INDEV_STATE_RELEASED, 0);
+        assert(lv_indev_get_group(keyboard) == controls_group);
+        assert(lv_group_get_focused(controls_group) == expected[i]);
+        assert_focused_outline_visible(display, expected[i], viewport);
+    }
+    /* Native key repeat must stay inside the panel through multiple wraps. */
+    for (int i = 0; i < 12; ++i) {
+        sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_PRESSED, 150);
+        lv_obj_t *focused = lv_group_get_focused(lv_indev_get_group(keyboard));
+        assert(focused == orientation || focused == share || focused == lock || focused == logout ||
+               focused == power || focused == brightness || focused == volume);
+    }
+    sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_RELEASED, 0);
+    lv_group_focus_obj(orientation);
+
+    /* Display/input reconnection may bind the keyboard back to the home
+     * group while the panel remains open. Rebinding must recapture it. */
+    lv_indev_set_group(keyboard, group);
+    launcher_ui_rebind_input(ui);
+    assert(lv_indev_get_group(keyboard) == controls_group);
+    sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_group_get_focused(controls_group) == share);
+    sample_keyboard(keyboard, LV_KEY_PREV, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_PREV, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_group_get_focused(controls_group) == orientation);
+    settle_focus_render(display);
+    lv_indev_delete(keyboard);
+}
+
+static void test_keyboard_navigation(launcher_ui_t *ui, launcher_registry_t *registry, lv_group_t *group,
+                                     lv_obj_t *pages)
+{
+    keyboard_sample_t sample = {0, LV_INDEV_STATE_RELEASED, false};
+    lv_indev_t *keyboard     = lv_indev_create();
+    assert(keyboard);
+    lv_indev_set_type(keyboard, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_group(keyboard, group);
+    lv_indev_set_user_data(keyboard, &sample);
+    lv_indev_set_read_cb(keyboard, read_keyboard);
+    lv_indev_add_event_cb(keyboard, keyboard_event, LV_EVENT_KEY, ui);
+    lv_timer_pause(lv_indev_get_read_timer(keyboard));
+
+    select_page(pages, 0);
+    lv_group_focus_obj(find_app_tile(pages, &registry->apps[0]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 0);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[1]));
+    for (int i = 0; i < 8; ++i) {
+        sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 30);
+        assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[1]));
+    }
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_RELEASED, 0);
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 0);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[2]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_RELEASED, 0);
+
+    /* A held direction waits 450 ms before repeating, then moves once per
+     * 150 ms. Additional polls at either threshold must not repeat again. */
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 0);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[3]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 449);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[3]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 1);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[4]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 149);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[4]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 1);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[5]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_RELEASED, 0);
+
+    /* Enter is edge-triggered even after the long-press threshold, and LVGL's
+     * synthesized release click must not create a second launch request. */
+    assert(!launcher_ui_take_launch_request(ui));
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
+    assert(launcher_ui_take_launch_request(ui) == &registry->apps[5]);
+    for (int i = 0; i < 8; ++i) {
+        sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 150);
+        assert(!launcher_ui_take_launch_request(ui));
+    }
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_RELEASED, 0);
+    assert(!launcher_ui_take_launch_request(ui));
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
+    assert(launcher_ui_take_launch_request(ui) == &registry->apps[5]);
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_RELEASED, 0);
+    assert(!launcher_ui_take_launch_request(ui));
+
+    /* Crossing a page boundary changes focus but must retain the held-key
+     * state, so a short press stops at the first app on the next page. */
+    lv_group_focus_obj(find_app_tile(pages, &registry->apps[17]));
+    select_page(pages, 0);
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 0);
+    assert(active_page_index(pages) == 1);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[18]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_PRESSED, 100);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[18]));
+    sample_keyboard(keyboard, LV_KEY_RIGHT, LV_INDEV_STATE_RELEASED, 0);
+
+    /* Space toggles Quick controls once per press, without activating the
+     * focused app or panel control when pressed, held, or released. */
+    launcher_ui_set_session_user(ui, "lilygo");
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_t *quick_scrim = lv_obj_find_by_name(screen, "quick_scrim");
+    lv_obj_t *orientation_button = lv_obj_find_by_name(screen, "orientation_button");
+    lv_obj_t *file_share_button = lv_obj_find_by_name(screen, "file_share_button");
+    lv_obj_t *lock_button = lv_obj_find_by_name(screen, "lock_button");
+    lv_obj_t *previous_focus = find_app_tile(pages, &registry->apps[18]);
+    launcher_orientation_t requested_orientation;
+    assert(quick_scrim && orientation_button && file_share_button && lock_button && previous_focus);
+    lv_group_focus_obj(previous_focus);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == orientation_button);
+    for (int i = 0; i < 8; ++i) {
+        sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 150);
+        assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+        assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == orientation_button);
+        assert(!launcher_ui_take_orientation_request(ui, &requested_orientation));
+        assert(!launcher_ui_take_launch_request(ui));
+    }
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    assert(!launcher_ui_take_orientation_request(ui, &requested_orientation));
+    assert(!launcher_ui_take_launch_request(ui));
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == file_share_button);
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    lv_obj_t *file_share_scrim = lv_obj_find_by_name(screen, "file_share_scrim");
+    assert(file_share_scrim && !lv_obj_has_flag(file_share_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ESC));
+    assert(lv_obj_has_flag(file_share_scrim, LV_OBJ_FLAG_HIDDEN));
+
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_RELEASED, 0);
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_DOWN, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == lock_button);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_indev_get_group(keyboard) == group);
+    assert(lv_obj_get_group(orientation_button) == group);
+    assert(lv_group_get_focused(group) == previous_focus);
+    assert(!launcher_ui_take_lock_request(ui));
+    for (int i = 0; i < 8; ++i) {
+        sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 150);
+        assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+        assert(lv_group_get_focused(group) == previous_focus);
+        assert(!launcher_ui_take_lock_request(ui));
+        assert(!launcher_ui_take_launch_request(ui));
+    }
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_group_get_focused(group) == previous_focus);
+    assert(!launcher_ui_take_lock_request(ui));
+    assert(!launcher_ui_take_launch_request(ui));
+
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == orientation_button);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(!launcher_ui_take_orientation_request(ui, &requested_orientation));
+    assert(!launcher_ui_take_launch_request(ui));
+    sample_keyboard(keyboard, LV_KEY_ESC, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_ESC, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_indev_get_group(keyboard) == group);
+    assert(lv_group_get_focused(group) == previous_focus);
+
+    /* Hidden account controls and unavailable system controls must be skipped
+     * in both directions, leaving the orientation card as the only action. */
+    launcher_ui_set_session_user(ui, NULL);
+    launcher_ui_set_system_controls(ui, false, 0, false, 0, false);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    const uint32_t single_control_keys[] = {LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_PREV, LV_KEY_PREV};
+    for (size_t i = 0; i < sizeof(single_control_keys) / sizeof(single_control_keys[0]); ++i) {
+        sample_keyboard(keyboard, single_control_keys[i], LV_INDEV_STATE_PRESSED, 0);
+        sample_keyboard(keyboard, single_control_keys[i], LV_INDEV_STATE_RELEASED, 0);
+        assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == orientation_button);
+    }
+    sample_keyboard(keyboard, LV_KEY_ESC, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_ESC, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_indev_get_group(keyboard) == group);
+    assert(lv_group_get_focused(group) == previous_focus);
+    sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_group_get_focused(group) == find_app_tile(pages, &registry->apps[19]));
+
+    launcher_ui_set_input_enabled(ui, false);
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
+    assert(!launcher_ui_handle_key(ui, ' '));
+    assert(!launcher_ui_handle_keyboard_input(ui, keyboard));
+    sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(!launcher_ui_take_orientation_request(ui, &requested_orientation));
+    assert(!launcher_ui_take_launch_request(ui));
+    launcher_ui_set_input_enabled(ui, true);
+    launcher_ui_set_session_user(ui, NULL);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    lv_indev_delete(keyboard);
+}
+
+static void press_key(lv_indev_t *keyboard, uint32_t key)
+{
+    sample_keyboard(keyboard, key, LV_INDEV_STATE_PRESSED, 0);
+    sample_keyboard(keyboard, key, LV_INDEV_STATE_RELEASED, 0);
+}
+
+static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_display_t *display, lv_indev_t *pointer)
+{
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_t *quick_scrim = lv_obj_find_by_name(screen, "quick_scrim");
+    lv_obj_t *orientation = lv_obj_find_by_name(screen, "orientation_button");
+    lv_obj_t *brightness = lv_obj_find_by_name(screen, "brightness_slider");
+    lv_obj_t *brightness_label = lv_obj_find_by_name(screen, "brightness_label");
+    lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
+    lv_obj_t *volume_label = lv_obj_find_by_name(screen, "volume_label");
+    lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *confirmation = lv_obj_find_by_name(screen, "power_confirm_scrim");
+    lv_obj_t *confirm = lv_obj_find_by_name(screen, "power_confirm_button");
+    lv_obj_t *cancel = lv_obj_find_by_name(screen, "power_cancel_button");
+    lv_obj_t *hint = lv_obj_find_by_name(screen, "power_confirm_hint");
+    assert(quick_scrim && orientation && brightness && brightness_label && volume && volume_label && power);
+    assert(confirmation && confirm && cancel && hint);
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+
+    keyboard_sample_t sample = {0, LV_INDEV_STATE_RELEASED, false};
+    lv_indev_t *keyboard = lv_indev_create();
+    assert(keyboard);
+    lv_indev_set_type(keyboard, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_group(keyboard, group);
+    lv_indev_set_user_data(keyboard, &sample);
+    lv_indev_set_read_cb(keyboard, read_keyboard);
+    lv_indev_add_event_cb(keyboard, keyboard_event, LV_EVENT_KEY, ui);
+    lv_timer_pause(lv_indev_get_read_timer(keyboard));
+    int requested = -1;
+
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    press_key(keyboard, ' ');
+    settle_focus_render(display);
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(brightness_label), "65%") == 0);
+    assert(strcmp(lv_label_get_text(volume_label), "40%") == 0);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    assert(!launcher_ui_take_volume_request(ui, &requested));
+
+    /* Level arrows adjust in five-percent steps without moving focus; Enter
+     * and the native release click must neither change nor submit a level. */
+    lv_group_focus_obj(brightness);
+    press_key(keyboard, LV_KEY_UP);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == brightness);
+    assert(lv_slider_get_value(brightness) == 70);
+    assert(launcher_ui_take_brightness_request(ui, &requested) && requested == 70);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    press_key(keyboard, LV_KEY_LEFT);
+    assert(launcher_ui_take_brightness_request(ui, &requested) && requested == 65);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(lv_slider_get_value(brightness) == 65);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    press_key(keyboard, LV_KEY_NEXT);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == volume);
+    press_key(keyboard, LV_KEY_RIGHT);
+    assert(launcher_ui_take_volume_request(ui, &requested) && requested == 45);
+    press_key(keyboard, LV_KEY_DOWN);
+    assert(launcher_ui_take_volume_request(ui, &requested) && requested == 40);
+
+    /* The backlight cannot be turned completely off; muted audio can reach
+     * zero. Hardware samples outside the supported range are also clamped. */
+    launcher_ui_set_system_controls(ui, true, -20, true, 140, true);
+    assert(lv_slider_get_value(brightness) == 1);
+    assert(lv_slider_get_value(volume) == 100);
+    lv_group_focus_obj(brightness);
+    press_key(keyboard, LV_KEY_DOWN);
+    assert(lv_slider_get_value(brightness) == 1);
+    if (launcher_ui_take_brightness_request(ui, &requested)) assert(requested == 1);
+    launcher_ui_set_system_controls(ui, true, 98, true, 2, true);
+    press_key(keyboard, LV_KEY_UP);
+    assert(launcher_ui_take_brightness_request(ui, &requested) && requested == 100);
+    lv_group_focus_obj(volume);
+    press_key(keyboard, LV_KEY_DOWN);
+    assert(launcher_ui_take_volume_request(ui, &requested) && requested == 0);
+
+    /* Exercise real pointer input: dragging a vertical level card must not
+     * trigger the panel's upward-dismiss gesture or lose the final value. */
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    lv_group_focus_obj(brightness);
+    settle_focus_render(display);
+    lv_area_t slider_area;
+    lv_obj_get_coords(brightness, &slider_area);
+    assert(lv_area_get_height(&slider_area) > lv_area_get_width(&slider_area));
+    pointer_point = (lv_point_t){(slider_area.x1 + slider_area.x2) / 2,
+                                 slider_area.y2 - lv_area_get_height(&slider_area) / 4};
+    pointer_state = LV_INDEV_STATE_PRESSED;
+    lv_indev_read(pointer);
+    pointer_point.y = slider_area.y1 + lv_area_get_height(&slider_area) / 5;
+    lv_indev_read(pointer);
+    assert(lv_slider_get_value(brightness) >= 75);
+    const int dragged_brightness = lv_slider_get_value(brightness);
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    assert(lv_slider_get_value(brightness) == dragged_brightness);
+    pointer_state = LV_INDEV_STATE_RELEASED;
+    lv_indev_read(pointer);
+    assert(launcher_ui_take_brightness_request(ui, &requested) && requested == dragged_brightness);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+
+    /* Missing devices stay visibly unavailable, ignore synthetic value
+     * events, and are omitted from keyboard navigation. */
+    launcher_ui_set_system_controls(ui, false, 50, false, 50, false);
+    assert(lv_obj_has_state(brightness, LV_STATE_DISABLED));
+    assert(lv_obj_has_state(volume, LV_STATE_DISABLED));
+    assert(lv_obj_has_state(power, LV_STATE_DISABLED));
+    assert(strcmp(lv_label_get_text(brightness_label), "--") == 0);
+    assert(strcmp(lv_label_get_text(volume_label), "--") == 0);
+    assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(volume, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(power, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    assert(!launcher_ui_take_volume_request(ui, &requested));
+    assert(!launcher_ui_take_power_request(ui));
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    lv_group_focus_obj(orientation);
+    press_key(keyboard, LV_KEY_NEXT);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == orientation);
+
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    lv_group_focus_obj(power);
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
+    assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == cancel);
+    for (int i = 0; i < 5; ++i) {
+        sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 150);
+        assert(!launcher_ui_take_power_request(ui));
+        assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    }
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_RELEASED, 0);
+    assert(!launcher_ui_take_power_request(ui));
+    press_key(keyboard, LV_KEY_ESC);
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(!launcher_ui_take_power_request(ui));
+
+    lv_group_focus_obj(power);
+    press_key(keyboard, LV_KEY_ENTER);
+    press_key(keyboard, LV_KEY_ENTER); /* Cancel is initially selected. */
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(!launcher_ui_take_power_request(ui));
+    lv_group_focus_obj(power);
+    press_key(keyboard, LV_KEY_ENTER);
+    press_key(keyboard, LV_KEY_NEXT);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == confirm);
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
+    assert(launcher_ui_take_power_request(ui));
+    for (int i = 0; i < 5; ++i) {
+        sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 150);
+        assert(!launcher_ui_take_power_request(ui));
+    }
+    sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_RELEASED, 0);
+    assert(!launcher_ui_take_power_request(ui));
+    launcher_ui_set_power_result(ui, false, false);
+    assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(!lv_obj_has_state(confirm, LV_STATE_DISABLED));
+    assert(strlen(lv_label_get_text(hint)) > 0);
+    lv_group_focus_obj(confirm);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(launcher_ui_take_power_request(ui));
+    launcher_ui_set_power_result(ui, true, true);
+    assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(confirm, LV_OBJ_FLAG_HIDDEN));
+    assert(strstr(lv_label_get_text(hint), "stay on"));
+    press_key(keyboard, LV_KEY_ESC);
+
+    /* Transitioning to the account screen clears requests already queued by
+     * all three controls and rejects subsequent events on hidden objects. */
+    lv_slider_set_value(brightness, 70, LV_ANIM_OFF);
+    assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    lv_slider_set_value(volume, 50, LV_ANIM_OFF);
+    assert(lv_obj_send_event(volume, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    lv_group_focus_obj(power);
+    press_key(keyboard, LV_KEY_ENTER);
+    lv_group_focus_obj(confirm);
+    press_key(keyboard, LV_KEY_ENTER);
+    launcher_ui_set_input_enabled(ui, false);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    assert(!launcher_ui_take_volume_request(ui, &requested));
+    assert(!launcher_ui_take_power_request(ui));
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(volume, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(power, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(confirm, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(!launcher_ui_take_brightness_request(ui, &requested));
+    assert(!launcher_ui_take_volume_request(ui, &requested));
+    assert(!launcher_ui_take_power_request(ui));
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    launcher_ui_set_input_enabled(ui, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    settle_focus_render(display);
+    assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    lv_indev_delete(keyboard);
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 6) {
+    if (argc != 6 && argc != 8) {
         fprintf(stderr,
                 "usage: %s PORTRAIT.ppm QUICK_CONTROLS.ppm LANDSCAPE.ppm "
-                "COMPACT.ppm COMPACT_QUICK_CONTROLS.ppm\n",
+                "COMPACT.ppm COMPACT_QUICK_CONTROLS.ppm [FILE_SHARE.ppm COMPACT_FILE_SHARE.ppm]\n",
                 argv[0]);
         return 2;
     }
@@ -229,6 +900,7 @@ int main(int argc, char **argv)
     lv_obj_t *previous_screen        = lv_screen_active();
     launcher_ui_t *ui                = launcher_ui_create(&registry);
     assert(ui);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
     assert(lv_indev_get_event_count(input) == input_event_count + 3);
     lv_obj_update_layout(lv_screen_active());
     assert(lv_obj_get_width(lv_screen_active()) == 568);
@@ -315,6 +987,37 @@ int main(int argc, char **argv)
     lv_obj_t *first_card      = lv_obj_get_child(lv_obj_get_child(pages, 0), 0);
     lv_obj_t *first_card_name = lv_obj_get_child(first_card, 1);
     assert(lv_color_eq(lv_obj_get_style_text_color(first_card_name, LV_PART_MAIN), lv_color_hex(COLOR_TEXT)));
+
+    /* Hardware keypad navigation starts from the current page even when the
+     * default group is focused on a non-app control (for example the quick
+     * panel orientation button).  Verify grid movement, activation, and a
+     * right-edge page transition through the public key handler. */
+    assert(launcher_ui_handle_key(ui, LV_KEY_RIGHT));
+    assert(lv_group_get_focused(focus_group) == first_card);
+    assert(launcher_ui_handle_key(ui, LV_KEY_RIGHT));
+    assert(lv_group_get_focused(focus_group) == find_app_tile(pages, &registry.apps[1]));
+    assert(launcher_ui_handle_key(ui, LV_KEY_DOWN));
+    assert(lv_group_get_focused(focus_group) == find_app_tile(pages, &registry.apps[4]));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    assert(launcher_ui_take_launch_request(ui) == &registry.apps[4]);
+    lv_group_focus_obj(find_app_tile(pages, &registry.apps[17]));
+    select_page(pages, 0);
+    assert(launcher_ui_handle_key(ui, LV_KEY_RIGHT));
+    pages = find_by_class(screen, &lv_tileview_class);
+    assert(active_page_index(pages) == 1);
+    assert(lv_group_get_focused(focus_group) == find_app_tile(pages, &registry.apps[18]));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ESC));
+
+    test_keyboard_navigation(ui, &registry, focus_group, pages);
+    test_system_controls(ui, focus_group, display, input);
+
+    /* Restore the initial page and non-app focus before the existing render
+     * snapshots below; navigation assertions must not change their baseline. */
+    select_page(pages, 0);
+    lv_group_focus_obj(lv_obj_find_by_name(screen, "orientation_button"));
+    first_card = find_app_tile(pages, &registry.apps[0]);
+    assert(first_card);
+
     assert(lv_obj_send_event(first_card, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(launcher_ui_take_launch_request(ui) == &registry.apps[0]);
     assert(!launcher_ui_take_launch_request(ui));
@@ -472,6 +1175,7 @@ int main(int argc, char **argv)
     assert(tiny_quick_scrim);
     assert(tiny_quick_handle);
     assert(strcmp(lv_label_get_text(tiny_orientation_label), "Portrait") == 0);
+    launcher_ui_set_session_user(ui, "lilygo");
     pointer_point = (lv_point_t){160, 20};
     pointer_state = LV_INDEV_STATE_PRESSED;
     lv_indev_read(input);
@@ -498,8 +1202,73 @@ int main(int argc, char **argv)
     assert(tiny_quick_handle_area.x2 <= tiny_panel_area.x2);
     assert(tiny_quick_handle_area.y1 >= tiny_panel_area.y1);
     assert(tiny_quick_handle_area.y2 <= tiny_panel_area.y2);
+    assert_session_actions_fit(screen);
+    test_quick_control_tab_focus(ui, focus_group, display);
     memset(framebuffer, 0, (size_t)WIDTH * HEIGHT * sizeof(*framebuffer));
     render(display, argv[5]);
+    launcher_ui_set_file_share_directory(ui, "/home/lilygo/Downloads");
+    launcher_ui_set_file_share_status(ui, "Waiting for a browser on the local network.");
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "file_share_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(launcher_ui_file_share_open(ui));
+    lv_obj_t *approve_file = lv_obj_find_by_name(screen, "file_share_approve_button");
+    lv_obj_t *reject_file = lv_obj_find_by_name(screen, "file_share_reject_button");
+    assert(approve_file && reject_file);
+    assert(lv_obj_has_flag(approve_file, LV_OBJ_FLAG_HIDDEN));
+    launcher_ui_set_file_share_approval(ui, "annual-report.pdf", 4096, true);
+    assert(!lv_obj_has_flag(approve_file, LV_OBJ_FLAG_HIDDEN));
+    if (argc == 8) render(display, argv[7]);
+    /* A newly displayed request defaults to Decline for hardware keyboards. */
+    assert(lv_obj_has_state(reject_file, LV_STATE_FOCUSED));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    bool file_approved = true;
+    assert(launcher_ui_take_file_share_decision(ui, &file_approved) && !file_approved);
+    launcher_ui_set_file_share_approval(ui, "annual-report.pdf", 4096, true);
+    assert(launcher_ui_handle_key(ui, LV_KEY_LEFT));
+    assert(lv_obj_has_state(approve_file, LV_STATE_FOCUSED));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    assert(launcher_ui_take_file_share_decision(ui, &file_approved) && file_approved);
+    launcher_ui_set_file_share_approval(ui, "next-file.txt", 64, true);
+    assert(!launcher_ui_take_file_share_decision(ui, &file_approved));
+    assert(lv_obj_has_state(reject_file, LV_STATE_FOCUSED));
+    launcher_ui_set_file_share_approval(ui, NULL, 0, false);
+    assert_file_share_content_fits(screen);
+    assert(launcher_ui_handle_key(ui, LV_KEY_ESC));
+    assert(!launcher_ui_file_share_open(ui));
+    assert(launcher_ui_handle_key(ui, ' '));
+
+    /* On shorter displays, scrolling the cards must not dismiss the panel. */
+    lv_display_set_resolution(display, 320, 200);
+    lv_obj_update_layout(screen);
+    lv_obj_t *overflow_controls = lv_obj_find_by_name(screen, "quick_controls");
+    lv_obj_t *overflow_lock = lv_obj_find_by_name(screen, "lock_button");
+    lv_obj_t *overflow_logout = lv_obj_find_by_name(screen, "session_button");
+    assert(overflow_controls && overflow_lock && overflow_logout);
+    assert(lv_obj_get_width(overflow_lock) == lv_obj_get_width(tiny_orientation_button));
+    assert(lv_obj_get_width(overflow_logout) == lv_obj_get_width(tiny_orientation_button));
+    assert(lv_obj_get_height(overflow_lock) == lv_obj_get_height(tiny_orientation_button));
+    assert(lv_obj_get_height(overflow_logout) == lv_obj_get_height(tiny_orientation_button));
+    assert(lv_obj_get_scroll_bottom(overflow_controls) > 0);
+    test_quick_control_tab_focus(ui, focus_group, display);
+    pointer_point = (lv_point_t){160, 150};
+    pointer_state = LV_INDEV_STATE_PRESSED;
+    lv_indev_read(input);
+    pointer_point = (lv_point_t){160, 65};
+    lv_indev_read(input);
+    pointer_state = LV_INDEV_STATE_RELEASED;
+    lv_indev_read(input);
+    assert(!lv_obj_has_flag(tiny_quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    lv_display_set_resolution(display, 320, 240);
+    lv_obj_update_layout(screen);
+    pages = find_by_class(screen, &lv_tileview_class);
+    assert(pages);
+    assert_session_actions_fit(screen);
+
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(launcher_ui_take_lock_request(ui));
+    assert(!launcher_ui_take_lock_request(ui));
+    assert(!launcher_ui_take_logout_request(ui));
+    assert(lv_obj_has_flag(tiny_quick_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(launcher_ui_handle_key(ui, ' '));
     assert(lv_obj_send_event(tiny_orientation_button, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     launcher_orientation_t tiny_requested_orientation;
     assert(launcher_ui_take_orientation_request(ui, &tiny_requested_orientation));
@@ -509,6 +1278,7 @@ int main(int argc, char **argv)
     assert(lv_obj_has_flag(tiny_quick_scrim, LV_OBJ_FLAG_HIDDEN));
     memset(framebuffer, 0, (size_t)WIDTH * HEIGHT * sizeof(*framebuffer));
     render(display, argv[4]);
+    launcher_ui_set_session_user(ui, NULL);
 
     bool tiny_pages_deleted = false;
     lv_obj_add_event_cb(pages, mark_deleted, LV_EVENT_DELETE, &tiny_pages_deleted);
@@ -533,6 +1303,7 @@ int main(int argc, char **argv)
     lv_group_focus_obj(first_card);
 
     assert(lv_obj_get_child_count(status_bar) == 3);
+    launcher_ui_set_session_user(ui, "lilygo");
     pointer_point = (lv_point_t){284, 20};
     pointer_state = LV_INDEV_STATE_PRESSED;
     lv_indev_read(input);
@@ -544,19 +1315,71 @@ int main(int argc, char **argv)
     assert(quick_scrim);
     assert(quick_panel);
     assert(lv_color_eq(lv_obj_get_style_bg_color(quick_panel, LV_PART_MAIN), lv_color_hex(COLOR_CONTAINER_BACKGROUND)));
-    assert(lv_obj_get_style_bg_opa(quick_panel, LV_PART_MAIN) == LV_OPA_COVER);
+    assert(lv_obj_get_style_bg_opa(quick_panel, LV_PART_MAIN) < LV_OPA_COVER);
+    assert(lv_obj_get_style_blur_backdrop(quick_panel, LV_PART_MAIN));
+    assert(lv_obj_get_style_blur_radius(quick_panel, LV_PART_MAIN) >= 1);
     lv_obj_t *quick_panel_title = lv_obj_find_by_name(quick_panel, "quick_panel_title");
     assert(quick_panel_title);
     assert(
         lv_color_eq(lv_obj_get_style_text_color(quick_panel_title, LV_PART_MAIN), lv_color_hex(COLOR_CONTAINER_TITLE)));
     lv_obj_t *orientation_label = lv_obj_find_by_name(quick_panel, "orientation_label");
+    lv_obj_t *orientation_button = lv_obj_find_by_name(quick_panel, "orientation_button");
+    assert(orientation_button);
     assert(orientation_label);
     assert(lv_color_eq(lv_obj_get_style_text_color(orientation_label, LV_PART_MAIN), lv_color_hex(COLOR_TEXT)));
+    assert_quick_control_style(orientation_button, lv_obj_find_by_name(quick_panel, "file_share_button"),
+                               lv_obj_find_by_name(quick_panel, "lock_button"),
+                               lv_obj_find_by_name(quick_panel, "session_button"));
+    assert_session_action_icons(screen);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
     lv_tick_inc(200);
     lv_timer_handler();
+    lv_obj_update_layout(screen);
+    assert_session_actions_fit(screen);
+    assert(lv_obj_get_width(orientation_button) == 220);
+    assert(lv_obj_get_height(orientation_button) == 104);
+    test_quick_control_tab_focus(ui, focus_group, display);
     render(display, argv[2]);
-    assert(lv_obj_send_event(quick_scrim, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(first_card, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(launcher_ui_handle_key(ui, LV_KEY_DOWN));
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == lv_obj_find_by_name(screen, "file_share_button"));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    lv_obj_t *file_share_scrim = lv_obj_find_by_name(screen, "file_share_scrim");
+    assert(file_share_scrim && !lv_obj_has_flag(file_share_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(launcher_ui_file_share_open(ui));
+    assert_file_share_content_fits(screen);
+    if (argc == 8) render(display, argv[6]);
+    assert(launcher_ui_handle_key(ui, LV_KEY_ESC));
+    assert(!launcher_ui_file_share_open(ui));
+    assert(lv_obj_has_flag(file_share_scrim, LV_OBJ_FLAG_HIDDEN));
+    assert(launcher_ui_handle_key(ui, ' '));
+    assert(launcher_ui_handle_key(ui, LV_KEY_DOWN));
+    assert(launcher_ui_handle_key(ui, LV_KEY_DOWN));
+    assert(lv_group_get_focused(lv_obj_get_group(orientation_button)) == lv_obj_find_by_name(screen, "lock_button"));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    assert(launcher_ui_take_lock_request(ui));
+    assert(!launcher_ui_take_lock_request(ui));
+    assert(launcher_ui_handle_key(ui, ' '));
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "session_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(launcher_ui_take_logout_request(ui));
+    assert(!launcher_ui_take_logout_request(ui));
+    assert(!launcher_ui_take_launch_request(ui));
+    assert(!launcher_ui_take_logout_request(ui));
+    launcher_ui_set_input_enabled(ui, false);
+    assert(!launcher_ui_handle_key(ui, LV_KEY_ENTER));
+    assert(!launcher_ui_handle_key(ui, LV_KEY_ESC));
+    assert(lv_obj_send_event(first_card, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(!launcher_ui_take_launch_request(ui));
+    assert(!launcher_ui_take_lock_request(ui));
+    launcher_ui_set_input_enabled(ui, true);
+    launcher_ui_set_session_user(ui, NULL);
+    assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "lock_button"), LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "session_button"), LV_OBJ_FLAG_HIDDEN));
+    assert(!lv_obj_has_flag(orientation_button, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(!launcher_ui_take_lock_request(ui));
+    assert(launcher_ui_handle_key(ui, LV_KEY_ESC));
     assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
     pointer_point = (lv_point_t){284, 20};
     pointer_state = LV_INDEV_STATE_PRESSED;
@@ -565,8 +1388,6 @@ int main(int argc, char **argv)
     pointer_state = LV_INDEV_STATE_RELEASED;
     lv_indev_read(input);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
-    lv_obj_t *orientation_button = lv_obj_find_by_name(quick_panel, "orientation_button");
-    assert(orientation_button);
     assert(lv_obj_send_event(orientation_button, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     launcher_orientation_t requested_orientation;
     assert(launcher_ui_take_orientation_request(ui, &requested_orientation));
@@ -609,6 +1430,7 @@ int main(int argc, char **argv)
     render(display, argv[3]);
 
     /* LVGL rotates raw input points into the landscape coordinate space. */
+    launcher_ui_set_session_user(ui, "lilygo");
     pointer_point = (lv_point_t){20, 615};
     pointer_state = LV_INDEV_STATE_PRESSED;
     lv_indev_read(input);
@@ -620,6 +1442,22 @@ int main(int argc, char **argv)
     lv_timer_handler();
     lv_obj_update_layout(screen);
     assert(lv_obj_get_y(quick_panel) == 0);
+    assert_session_actions_fit(screen);
+    assert(lv_obj_get_width(orientation_button) == 220);
+    assert(lv_obj_get_height(orientation_button) == 84);
+    test_quick_control_tab_focus(ui, focus_group, display);
+
+    /* Open controls remain equally sized when the display changes shape. */
+    lv_display_set_rotation(display, LV_DISPLAY_ROTATION_0);
+    lv_obj_update_layout(screen);
+    assert_session_actions_fit(screen);
+    assert(lv_obj_get_width(orientation_button) == 220);
+    assert(lv_obj_get_height(orientation_button) == 104);
+    lv_display_set_rotation(display, LV_DISPLAY_ROTATION_90);
+    lv_obj_update_layout(screen);
+    assert_session_actions_fit(screen);
+    assert(lv_obj_get_height(orientation_button) == 84);
+    launcher_ui_set_session_user(ui, NULL);
     assert(lv_obj_send_event(quick_scrim, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     lv_tick_inc(60);
     lv_timer_handler();
@@ -627,8 +1465,9 @@ int main(int argc, char **argv)
     lv_obj_update_layout(screen);
     lv_tick_inc(200);
     lv_timer_handler();
-    assert(lv_obj_get_height(quick_panel) == 260);
-    assert(lv_obj_get_y(quick_panel) == -260);
+    const int32_t closed_panel_height = lv_obj_get_height(quick_panel);
+    assert(closed_panel_height >= 260);
+    assert(lv_obj_get_y(quick_panel) == -closed_panel_height);
 
     /* Retaining the UI across DRM handoff must not lose gestures when the
      * exclusive evdev input is closed and recreated. Deleting mid-gesture also
@@ -703,7 +1542,11 @@ int main(int argc, char **argv)
     assert(restored_shutdown && !lv_obj_has_flag(restored_shutdown, LV_OBJ_FLAG_HIDDEN));
     launcher_ui_hide_shutdown(ui);
     assert(lv_obj_has_flag(restored_shutdown, LV_OBJ_FLAG_HIDDEN));
+    const uint32_t home_group_count = lv_group_get_count();
+    assert(launcher_ui_handle_key(ui, ' '));
+    assert(lv_group_get_count() == home_group_count + 1);
     launcher_ui_destroy(ui);
+    assert(lv_group_get_count() == home_group_count);
     assert(lv_screen_active() == previous_screen);
     assert(!lv_obj_is_valid(launcher_screen));
     lv_display_delete(display);
@@ -723,7 +1566,10 @@ int main(int argc, char **argv)
     assert(ui);
     launcher_screen = lv_screen_active();
     assert(lv_indev_get_event_count(input) == display_first_input_events + 3);
+    assert(launcher_ui_handle_key(ui, ' '));
+    assert(lv_group_get_count() == home_group_count + 1);
     lv_display_delete(display);
+    assert(lv_group_get_count() == home_group_count);
     assert(!lv_obj_is_valid(launcher_screen));
     launcher_ui_destroy(ui);
     assert(lv_indev_get_event_count(input) == display_first_input_events);

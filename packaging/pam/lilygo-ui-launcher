@@ -1,0 +1,5 @@
+# LILYGO UI launcher PAM policy.  The service runs as root and supplies the
+# tty explicitly; PAM still performs password authentication and account policy.
+auth      requisite pam_unix.so
+account   required  pam_unix.so
+session   required  pam_unix.so

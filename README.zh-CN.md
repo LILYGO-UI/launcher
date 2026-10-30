@@ -8,14 +8,31 @@ LILYGO UI Launcher 是面向 LILYGO Linux 产品的 LVGL 应用启动器，CM0 �
 因此安装或卸载兼容的 `.deb` 后即可更新首页，无需重新构建 Launcher。
 
 设备与模拟器默认使用 568x1232 的竖屏逻辑画布。首页使用 96 px 高的 AppKit 状态栏，
-每页最多显示 18 个应用，竖屏为 3 列 6 行，横屏为 6 列 3 行。从状态栏向下滑动可打开
-快捷控制面板并切换方向；左右滑动或点击分页指示器可切换应用页。主机模拟器在保留
-逻辑画布尺寸的同时，自动缩放窗口以适应当前显示器；SDL 窗口使用高 DPI 渲染，
-缩放后仍保持清晰。
+每页最多显示 18 个应用，竖屏为 3 列 6 行，横屏为 6 列 3 行。按空格键或从状态栏向下
+滑动可打开快捷控制面板并切换方向，再按空格键或按 Esc 关闭面板；左右滑动或点击
+分页指示器可切换应用页。主机模拟器在保留逻辑画布尺寸的同时，自动缩放窗口以适应
+当前显示器；SDL 窗口使用高 DPI 渲染，缩放后仍保持清晰。
 
 `--width` 和 `--height` 设置用于诊断的未旋转竖屏基准画布；
 `--orientation portrait|landscape` 设置初始方向。SDL 窗口可自由调整大小，
 便于验证较小或较宽的视口。
+
+设备接入 TCA8418 键盘时自动切换横屏，启动时已连接也会生效；断开键盘时保留当前方向。
+快捷控制面板始终可以自由切换横竖屏，键盘持续连接期间会保留手动选择，从应用返回后
+也不会强制改回横屏。再次接入键盘会重新触发横屏。其他键盘和 SDL 模拟器的主机键盘
+不会触发自动旋转。
+设备登录后，快捷控制面板还提供 **Lock screen（锁屏）**，保留当前账户会话，
+输入该账户的密码即可解锁；**Sign out（退出登录）** 则会结束会话。快捷控制面板还提供参考
+iOS 风格的 **Power off（关机）**、**Brightness（亮度）** 和 **Volume（音量）** 卡片。
+亮度和音量支持竖向拖动，也可通过键盘以 5% 步进调整。关机始终需要确认；模拟器只显示
+安全完成提示，不会关闭主机。
+连接检测通过 `/dev/i2c-*` 读取 TCA8418 的配置寄存器。拔插使芯片配置复位、但输入节点
+仍保留时，Launcher 会重新绑定该键盘的内核驱动，恢复矩阵扫描和中断，再发现新的输入
+设备。恢复失败会重试，不会覆盖手动选择的屏幕方向。这需要访问键盘所在的 I²C 适配器
+和驱动的 sysfs bind/unbind 控制节点；安装的 root 服务具备这些权限。
+前台应用运行期间，Launcher 也会继续检测并恢复键盘；AppKit 负责在旧输入设备被删除后
+重新打开新的 evdev 节点。由于 AppKit 静态链接进应用，已有应用需要使用包含重连修复的
+SDK 重新构建，才能在不重启应用的情况下恢复输入。
 
 ## 项目结构
 
@@ -91,7 +108,7 @@ lpm metadata --format publish-json --output .lpm/publish.json
 安装 CMake、pkg-config、SDL2、FreeType 和 LPM。在 macOS 上：
 
 ```sh
-brew install cmake pkg-config sdl2 freetype
+brew install cmake pkg-config sdl2 freetype glib openssl@3
 git submodule update --init --recursive
 lpm start --foreground
 lpm test
@@ -101,6 +118,10 @@ lpm test
 无需下载 LVGL。主机字体从子模块资源目录加载，无需安装 AppKit 二进制 SDK 或设置
 `CMAKE_PREFIX_PATH`。若复用之前采用二进制 SDK 的构建目录，需先重置一次 CMake
 缓存：`cmake --fresh --preset host-simulator`（要求 CMake 3.24 或更新版本）。
+
+主机模拟器使用虚拟凭据登录：用户名 `pi`，密码 `raspberry`。这些凭据支持登录、
+锁屏解锁和退出登录，无需创建或认证开发机的系统账户；启动的应用继续以当前开发机
+用户运行。虚拟认证只编译进主机模拟器，设备构建使用真实 Linux 账户和 PAM。
 
 主机模拟器不内置应用。安装应用包，或将 `LAUNCHER_APP_DIRS` 指向应用 manifest
 所在目录，即可在首页显示应用。每个应用均从自己的仓库独立构建和打包。
@@ -148,6 +169,90 @@ Launcher 直接使用系统时钟和时区，不单独实现 NTP 客户端。
 target 和显示管理器状态记录在 `/var/lib/lilygo-ui-launcher`，供卸载时恢复。
 软件包不安装 XDG autostart 或应用菜单入口。
 
+Launcher 以 root 运行，用于管理显示设备和设置首次账号。pi-gen 启用首次启动向导时，
+`lilygo-ui-launcher-first-boot prepare` 检测 `rename-user` 留下的 SSH 重命名提示配置、
+`piwiz.desktop` 或已启用的 `userconfig.service`，将原账号的 UID 和名称保存到仅 root
+可写的 `/var/lib/lilygo-ui-launcher/first-boot-pending`。随后进入完整设置流程：
+地区与语言 → 账号 → Wi-Fi → 更新 → 完成。账号页包含用户名、密码、确认密码；
+用户名预填为原账号名称，可以保留 `pi`，也可以修改。
+
+设置会原地重命名原账号、主目录及同名主用户组，保留 UID、已有附加组和 SSH 公钥等
+预置文件，将镜像的禁用登录 shell 改为 `/bin/bash`，并同步 `subuid`、`subgid` 及已有
+`010_pi-nopasswd` 中的账号名。账号会加入
+`sudo` 组，沿用系统 sudo 策略。软件包依赖 `sudo`，缺少该组时会在修改账号前报错；
+Launcher 不添加免密码规则。如果系统完全没有 UID 1000 账号，则使用 `useradd` 创建
+首个账号，并加入 `sudo` 及可用的 `video`、`render`、`input` 组。
+
+密码通过 `chpasswd` 的标准输入设置，并经 PAM 验证。成功后才写入
+`/var/lib/lilygo-ui-launcher/active-user`，继续后续设置，完成向导时才移除上游向导入口、临时向导账号及其
+sudo 规则、SSH 重命名提示和 autologin 标记，禁用 `userconfig.service`。收尾不会
+改变 Launcher 的显示服务或启动目标。设置失败可依据原 UID 重试；仅 root 可读写的
+`first-boot-progress` 保存已完成步骤。中途重启后须先用已保存的账号认证，再继续设置；
+收尾中断可以重试。重命名开始后，重试使用已选定的用户名直至完成设置。密码不会写入
+Launcher 状态文件或命令行。
+
+如果镜像设置了 `DISABLE_FIRST_BOOT_USER_RENAME=1` 并预配账号，Launcher 直接显示
+普通登录页，首次认证成功后记录账号，不会重命名或修改其用户组。之后每次启动显示
+登录页；应用以认证账号的 UID、GID、附加组运行，使用其 HOME 和 XDG 目录。
+`userconfig.service` 的 systemd drop-in 防止控制台向导与 Launcher 争用 tty1。
+
+登录后，打开 **Quick controls → File sharing**，即可接收同一局域网内浏览器发送的文件。
+浏览器选择设备名 `lilygo_xxxx`（蓝牙 MAC 的最后两个字节）后会自动发现 GATT 服务并建立局域网直连，无需输入配对码。
+蓝牙仅负责发现设备和快速协商；DataChannel 建立后浏览器自动释放蓝牙连接，文件通过同一局域网传输。
+每次发送文件前，设备会显示文件名和大小，必须在设备上点按 **Receive file** 才会开始传输；
+选择 **Decline** 会拒绝该文件。每个文件分别确认，无需额外部署 WSS 信令或中转服务。
+关闭共享面板、锁屏或退出登录都会停止共享。
+
+文件保存到认证用户私有的 `$HOME/Downloads`，先写入临时文件，校验大小和 SHA-256 后
+原子提交；重名文件自动添加序号。Launcher 以 root 运行时不会把自身继承的 `HOME` 当作
+目标路径。浏览器默认单文件上限为 512 MiB，详见[局域网文件共享说明](docs/file-sharing.md)
+中的连接步骤、协议、依赖和测试方法。
+
+旧版向导已创建的账号需由现有管理员执行一次 `sudo usermod -aG sudo wing`（root shell
+中直接执行 `usermod -aG sudo wing`），然后退出并重新登录，包括重新连接 SSH。
+仅升级 Launcher 不会更改已有账号的权限。
+
+已有账号的目标板需要重复测试向导时，保留原管理员，使用独立临时来源账号。
+停止 Launcher 后备份并移走四项向导状态，创建仅 root 可写的
+`first-boot-pending`（内容为临时账号的 `UID:用户名`），再启动 Launcher。
+`prepare` 不会强制重置已完成的设置；仅删除 `active-user` 也不会重新开启向导。
+[板端重进与恢复步骤](tests/README.md#re-entering-setup-on-an-already-configured-board)
+包含完整命令及临时账号清理方法。只预览页面可在模拟器使用 `--setup-demo`。
+
+构建需要本地向导的 pi-gen 镜像时，不设置 `FIRST_USER_PASS`，且不设置
+`DISABLE_FIRST_BOOT_USER_RENAME`（或设为 `0`），即可不携带默认密码并由 Launcher
+完成账号设置。该实现参考了官方
+[rename-user](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/rename-user)、
+[userconf](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/userconf) 和
+[cancel-rename](https://github.com/RPi-Distro/userconf-pi/blob/pios/trixie/cancel-rename)
+的账号生命周期，不依赖桌面环境。
+
+地区页从系统目录读取国家、UTF-8 语言、时区和 XKB 键盘布局，通过
+[raspi-config](https://github.com/RPi-Distro/raspi-config/blob/trixie/raspi-config)
+配置 Wi-Fi 国家、系统语言、时区和系统键盘，并验证保存结果后继续。语言选项设置系统
+locale，当前 Launcher 界面仍为英文。键盘选项设置 Linux 控制台和桌面布局；Launcher
+软键盘及 AppKit 的原始 evdev 文本映射目前仍使用 US 布局。
+
+Wi-Fi 页使用 NetworkManager，可扫描网络、手动输入隐藏 SSID、连接 WPA2/WPA3、
+Enhanced Open 或开放网络，也可以跳过。密码通过标准输入传递，不出现在命令行或
+Launcher 日志；系统连接配置由 NetworkManager 保存。企业 802.1X 和 WEP 网络需由
+管理员另行配置。
+
+更新页可以检查、安装、失败后重试或返回 Wi-Fi，也可以跳过。
+`lilygo-ui-launcher-first-boot-update.service` 独立运行 apt，升级 Launcher 软件包时仍可
+继续安装。更新会刷新索引、升级软件包及新增依赖、保留现有配置，进度保存在
+`first-boot-update`。检查或安装期间禁止切换页面；中断的安装可重试。
+完成向导后进入主页；如果更新提示需要重启，请在设置结束后重启设备。
+
+可在模拟器中预览完整流程，所有操作仅保存在内存中，不修改宿主系统：
+
+```sh
+build/host-simulator/lilygo-ui-launcher --setup-demo
+```
+
+浏览器选择及启动分区 `userconf` / `userconf.txt` 导入不在当前流程范围内；
+无屏幕镜像请在构建时预配账号。
+
 除触摸输入外，Launcher 还会根据 evdev 能力发现 GPIO `KEY_POWER` 事件设备。
 收到按压事件序列时，界面显示包含“正在关机”和“请继续按住电源键”的遮罩；GEK100
 脉冲流停止 300 ms 后恢复正常页面。板端长按辅助程序负责判定持续三秒后的关机操作。
@@ -178,6 +283,12 @@ flip、释放 DRM master 并关闭 evdev 输入，然后启动应用；同时保
 
 BSP 提供编译器和基础系统库。AppKit 从固定子模块编译，sysroot 无需安装 AppKit
 二进制包。使用自定义 BSP 时，通过 `-DCMAKE_TOOLCHAIN_FILE=...` 传入其工具链。
+原生 C++ 文件分享辅助程序还需要 GLib/GIO 和 OpenSSL 开发文件。使用固定 BSP
+时，CMake 自动下载并校验固定 SHA-256 的 ARM64 开发包，缓存于
+`.cache/cm0-bsp/transport/trixie-arm64-v1`，同时补齐 GLib 所需的 sysprof、zlib
+开发元数据。该独立缓存复用 BSP 运行库，不修改原始 sysroot。自定义 BSP 应提供
+与其运行库匹配的开发文件。
+WebRTC 依赖从固定版本源码编译，详见[文件分享说明](docs/file-sharing.md#device-architecture-and-installed-files)。
 
 设备后端不依赖 SDL、Wayland、xkbcommon、spdlog 或 fmt，默认使用软件渲染。
 若 BSP 包含 `libgbm-dev`、`libegl-dev` 和 `libgles-dev`，可在独立构建目录中设置
@@ -257,6 +368,11 @@ manifest 格式如下：
 manifest 按优先级从 `$LAUNCHER_APP_DIRS`、用户 XDG 数据目录、
 `/usr/local/share/launcher/apps` 和 `/usr/share/launcher/apps` 读取。
 无效 manifest、缺失的可执行文件和重复 ID 会被跳过。
+
+应用子进程会在 `initgroups`、`setgid` 和 `setuid` 后以已认证的 Linux 用户运行，
+Launcher 只清理 root 专用的环境变量，不会强制设置 `PR_SET_NO_NEW_PRIVS`。因此 Settings
+在修改 SSH 或 Serial Console 配置时，可以按系统已有的 `sudo` 或 polkit 策略请求权限；
+仍须通过该用户正常的授权和认证，Launcher 不提供 root 凭据。
 
 首页显示期间每两秒重新扫描一次目录。新安装的应用无需重启 Launcher 即可出现，
 已卸载的应用则从首页移除。每个应用在独立子进程中运行，拥有自己的 LVGL 状态。

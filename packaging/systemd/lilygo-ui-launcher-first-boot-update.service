@@ -1,0 +1,15 @@
+[Unit]
+Description=Install operating system updates during LILYGO first boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-first-boot-update worker
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lilygo-ui-launcher-first-boot-update

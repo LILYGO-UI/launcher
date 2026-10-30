@@ -11,6 +11,7 @@
 | [图形渲染](graphics-rendering.md) | 软件、OpenGLES、NanoVG 的选择依据，旋转与缓存管理，私有 Mesa 和软件整帧缓冲的边界 |
 | [SDK 与打包](sdk-packaging.md) | 独立仓库如何消费源码 SDK、静态链接 AppKit/LVGL，共享字体并独立发布 Debian 包 |
 | [UI 设计规范](ui-design-guidelines.md) | 响应式布局、颜色、字体、字号、中西文混排与字体授权 |
+| [浏览器文件共享](file-sharing.md) | 自动蓝牙信令、设备逐文件确认、局域网 WebRTC 直连、Downloads 边界及接收验证 |
 
 从 [中文 README](../README.zh-CN.md)（[English](../README.md)）开始构建和运行；
 板端复现步骤、测试参数和测量口径见

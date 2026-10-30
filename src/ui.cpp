@@ -7,6 +7,8 @@
 #include <cm0/typography.h>
 
 #include <new>
+#include <algorithm>
+#include <array>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +30,26 @@ struct launcher_ui {
     lv_point_t pull_start{};
     bool pull_tracking        = false;
     bool quick_panel_open     = false;
+    lv_obj_t *quick_panel_previous_focus = nullptr;
+    lv_group_t *quick_panel_group = nullptr;
+    lv_group_t *quick_panel_previous_group = nullptr;
+    bool input_enabled        = true;
+    bool lock_request         = false;
+    bool logout_request       = false;
+    int brightness_request    = -1;
+    int volume_request        = -1;
+    bool power_request        = false;
+    bool power_confirmation_open = false;
+    bool file_share_open      = false;
+    bool file_share_approval_visible = false;
+    bool file_share_decision_pending = false;
+    bool file_share_decision_accepted = false;
+    lv_group_t *file_share_group = nullptr;
+    lv_group_t *file_share_previous_group = nullptr;
+    lv_obj_t *file_share_previous_focus = nullptr;
+    bool power_busy           = false;
+    char session_user[128]{};
+    char file_share_directory[LAUNCHER_PATH_MAX]{};
     bool shutdown_visible     = false;
     bool relayout_in_progress = false;
     int32_t layout_width      = 0;
@@ -41,6 +63,10 @@ struct launcher_ui {
     char refresh_pending_app_id[LAUNCHER_ID_MAX]{};
     size_t refresh_active_page     = 0;
     bool registry_refresh_prepared = false;
+    uint32_t keyboard_key          = 0;
+    uint32_t keyboard_action_tick  = 0;
+    bool keyboard_pressed          = false;
+    bool keyboard_repeating        = false;
 };
 
 enum {
@@ -55,6 +81,8 @@ enum {
     HOME_INDICATOR_HEIGHT       = 38,
     QUICK_PANEL_PULL_START_ZONE = 96,
     QUICK_PANEL_PULL_DISTANCE   = 64,
+    KEYBOARD_REPEAT_DELAY_MS   = 450,
+    KEYBOARD_REPEAT_INTERVAL_MS = 150,
 };
 
 struct layout_metrics_t {
@@ -64,7 +92,6 @@ struct layout_metrics_t {
     int32_t rows;
     int32_t cell_height;
     int32_t bottom_inset;
-    int32_t panel_height;
     size_t apps_per_page;
 };
 
@@ -145,9 +172,111 @@ static void start_animation(lv_obj_t *object, lv_anim_exec_xcb_t callback, int32
     lv_anim_start(&animation);
 }
 
+static void capture_quick_panel_input(launcher_ui_t *ui)
+{
+    if (!ui->quick_panel_group) return;
+    for (lv_indev_t *input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+        if (lv_indev_get_group(input) == ui->quick_panel_previous_group)
+            lv_indev_set_group(input, ui->quick_panel_group);
+    }
+}
+
+static std::array<lv_obj_t *, 9> quick_control_objects(launcher_ui_t *ui)
+{
+    return {ui->view.orientation_button, ui->view.file_share_button, ui->view.lock_button,
+            ui->view.session_button, ui->view.power_button, ui->view.brightness_slider,
+            ui->view.volume_slider, ui->view.power_cancel_button, ui->view.power_confirm_button};
+}
+
+static void quick_control_focused(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->view.quick_controls) return;
+    lv_obj_t *control = lv_event_get_target_obj(event);
+    lv_obj_t *viewport = ui->view.quick_controls;
+    // Native focus scrolling considers only the widget bounds. Cancel its
+    // animation and reveal the complete outline inside the scroll viewport.
+    lv_obj_stop_scroll_anim(viewport);
+    lv_obj_update_layout(viewport);
+    const int32_t extent = lv_obj_get_style_outline_pad(control, LV_PART_MAIN) +
+                           lv_obj_get_style_outline_width(control, LV_PART_MAIN);
+    lv_area_t visible, area;
+    lv_obj_get_coords(viewport, &visible);
+    lv_obj_get_coords(control, &area);
+    int32_t delta = 0;
+    if (area.y1 - extent < visible.y1) delta = visible.y1 + extent - area.y1;
+    else if (area.y2 + extent > visible.y2) delta = visible.y2 - extent - area.y2;
+    lv_obj_scroll_to_y(viewport, lv_obj_get_scroll_y(viewport) - delta, LV_ANIM_OFF);
+}
+
+static void populate_quick_panel_group(launcher_ui_t *ui)
+{
+    if (!ui->quick_panel_group) return;
+    lv_group_remove_all_objs(ui->quick_panel_group);
+    const auto controls = quick_control_objects(ui);
+    const size_t begin = ui->power_confirmation_open ? 7 : 0;
+    const size_t end = ui->power_confirmation_open ? 9 : 7;
+    for (size_t i = begin; i < end; ++i) {
+        if (!lv_obj_has_flag(controls[i], LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_state(controls[i], LV_STATE_DISABLED))
+            lv_group_add_obj(ui->quick_panel_group, controls[i]);
+    }
+}
+
+static void close_power_confirmation(launcher_ui_t *ui)
+{
+    if (!ui->power_confirmation_open) return;
+    ui->power_confirmation_open = false;
+    ui->power_request = false;
+    ui->power_busy = false;
+    lv_obj_add_flag(ui->view.power_confirm_scrim, LV_OBJ_FLAG_HIDDEN);
+    populate_quick_panel_group(ui);
+    if (ui->quick_panel_group) {
+        lv_group_focus_obj(ui->view.power_button);
+    }
+}
+
+static void restore_quick_panel_focus(launcher_ui_t *ui)
+{
+    if (!ui->quick_panel_group) return;
+    for (lv_indev_t *input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+        if (lv_indev_get_group(input) == ui->quick_panel_group)
+            lv_indev_set_group(input, ui->quick_panel_previous_group);
+    }
+    for (lv_obj_t *control : quick_control_objects(ui)) {
+        if (!control) continue;
+        if (ui->quick_panel_previous_group)
+            lv_group_add_obj(ui->quick_panel_previous_group, control);
+        else
+            lv_group_remove_obj(control);
+    }
+    lv_group_delete(ui->quick_panel_group);
+    ui->quick_panel_group = nullptr;
+    ui->quick_panel_previous_group = nullptr;
+    if (ui->quick_panel_previous_focus && lv_obj_is_valid(ui->quick_panel_previous_focus))
+        lv_group_focus_obj(ui->quick_panel_previous_focus);
+    ui->quick_panel_previous_focus = nullptr;
+}
+
 static void play_quick_panel(launcher_ui_t *ui, bool open)
 {
     if (!ui || !ui->view.screen || ui->quick_panel_open == open) return;
+    if (open) {
+        ui->quick_panel_group = lv_group_create();
+        if (!ui->quick_panel_group) return;
+        ui->quick_panel_previous_group = static_cast<lv_group_t *>(lv_obj_get_group(ui->view.orientation_button));
+        lv_group_t *group = ui->quick_panel_previous_group;
+        ui->quick_panel_previous_focus = group ? lv_group_get_focused(group) : nullptr;
+        // Native Tab navigation always follows the input's group, even after
+        // lv_indev_stop_processing(). Keep only the modal cards in that group.
+        populate_quick_panel_group(ui);
+        capture_quick_panel_input(ui);
+        if (lv_obj_t *background_focus = group ? lv_group_get_focused(group) : nullptr)
+            lv_obj_remove_state(background_focus, static_cast<lv_state_t>(LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY));
+        lv_group_focus_obj(ui->view.orientation_button);
+    } else {
+        close_power_confirmation(ui);
+        restore_quick_panel_focus(ui);
+    }
     ui->quick_panel_open       = open;
     const int32_t panel_height = lv_obj_get_height(ui->view.quick_panel);
     if (open)
@@ -164,11 +293,34 @@ static void pull_down_input_event(lv_event_t *event)
 {
     auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
     if (!ui || !ui->input) return;
+    if ((!ui->input_enabled || ui->power_confirmation_open || ui->file_share_open || ui->shutdown_visible) &&
+        lv_event_get_code(event) != LV_EVENT_DELETE) return;
 
     switch (lv_event_get_code(event)) {
         case LV_EVENT_PRESSED:
             lv_indev_get_point(ui->input, &ui->pull_start);
             ui->pull_tracking = ui->quick_panel_open || ui->pull_start.y <= QUICK_PANEL_PULL_START_ZONE;
+            if (ui->quick_panel_open) {
+                // A vertical slider drag belongs to that control, even when
+                // the panel itself has no scroll overflow.
+                for (lv_obj_t *slider : {ui->view.brightness_slider, ui->view.volume_slider}) {
+                    lv_area_t area;
+                    lv_obj_get_coords(slider, &area);
+                    if (ui->pull_start.x >= area.x1 && ui->pull_start.x <= area.x2 &&
+                        ui->pull_start.y >= area.y1 && ui->pull_start.y <= area.y2)
+                        ui->pull_tracking = false;
+                }
+            }
+            if (ui->quick_panel_open && ui->view.quick_controls &&
+                lv_obj_get_scroll_top(ui->view.quick_controls) + lv_obj_get_scroll_bottom(ui->view.quick_controls) > 0) {
+                lv_area_t controls_area;
+                lv_obj_get_coords(ui->view.quick_controls, &controls_area);
+                // On short displays this gesture scrolls the cards instead of
+                // dismissing the panel. The handle still supports dismissal.
+                if (ui->pull_start.x >= controls_area.x1 && ui->pull_start.x <= controls_area.x2 &&
+                    ui->pull_start.y >= controls_area.y1 && ui->pull_start.y <= controls_area.y2)
+                    ui->pull_tracking = false;
+            }
             break;
         case LV_EVENT_RELEASED: {
             if (!ui->pull_tracking) break;
@@ -213,18 +365,195 @@ static void scrim_clicked(lv_event_t *event)
 static void orientation_clicked(lv_event_t *event)
 {
     auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
-    if (!ui) return;
+    if (!ui || !ui->input_enabled || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
     ui->requested_orientation = ui->orientation == LAUNCHER_ORIENTATION_LANDSCAPE ? LAUNCHER_ORIENTATION_PORTRAIT
                                                                                   : LAUNCHER_ORIENTATION_LANDSCAPE;
     ui->orientation_request_pending = true;
     play_quick_panel(ui, false);
 }
 
+static void lock_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->input_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
+    ui->pending_app = nullptr;
+    ui->lock_request = true;
+    play_quick_panel(ui, false);
+}
+
+static void logout_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->input_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
+    ui->logout_request = true;
+    play_quick_panel(ui, false);
+}
+
+static void capture_file_share_input(launcher_ui_t *ui)
+{
+    if (!ui->file_share_group) return;
+    for (lv_indev_t *input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+        if (lv_indev_get_group(input) == ui->file_share_previous_group)
+            lv_indev_set_group(input, ui->file_share_group);
+    }
+}
+
+static void restore_file_share_focus(launcher_ui_t *ui)
+{
+    if (!ui->file_share_group) return;
+    for (lv_indev_t *input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+        if (lv_indev_get_group(input) == ui->file_share_group)
+            lv_indev_set_group(input, ui->file_share_previous_group);
+    }
+    for (lv_obj_t *control : {ui->view.file_share_approve_button, ui->view.file_share_reject_button,
+                              ui->view.file_share_close_button}) {
+        if (!control) continue;
+        if (ui->file_share_previous_group) lv_group_add_obj(ui->file_share_previous_group, control);
+        else lv_group_remove_obj(control);
+    }
+    lv_group_delete(ui->file_share_group);
+    ui->file_share_group = nullptr;
+    ui->file_share_previous_group = nullptr;
+    if (ui->file_share_previous_focus && lv_obj_is_valid(ui->file_share_previous_focus))
+        lv_group_focus_obj(ui->file_share_previous_focus);
+    ui->file_share_previous_focus = nullptr;
+}
+
+static void populate_file_share_group(launcher_ui_t *ui)
+{
+    if (!ui->file_share_group) return;
+    lv_group_remove_all_objs(ui->file_share_group);
+    if (ui->file_share_approval_visible) {
+        lv_group_add_obj(ui->file_share_group, ui->view.file_share_approve_button);
+        lv_group_add_obj(ui->file_share_group, ui->view.file_share_reject_button);
+    }
+    lv_group_add_obj(ui->file_share_group, ui->view.file_share_close_button);
+    lv_group_focus_obj(ui->file_share_approval_visible ? ui->view.file_share_reject_button
+                                                      : ui->view.file_share_close_button);
+}
+
+static void close_file_share_panel(launcher_ui_t *ui)
+{
+    if (!ui || !ui->file_share_open) return;
+    ui->file_share_open = false;
+    ui->file_share_approval_visible = false;
+    ui->file_share_decision_pending = false;
+    restore_file_share_focus(ui);
+    lv_obj_add_flag(ui->view.file_share_approve_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui->view.file_share_reject_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui->view.file_share_scrim, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void open_file_share_panel(launcher_ui_t *ui)
+{
+    if (!ui || !ui->view.file_share_scrim || ui->power_confirmation_open || ui->file_share_open) return;
+    play_quick_panel(ui, false);
+    ui->file_share_group = lv_group_create();
+    if (!ui->file_share_group) return;
+    ui->file_share_previous_group = static_cast<lv_group_t *>(lv_obj_get_group(ui->view.file_share_close_button));
+    ui->file_share_previous_focus = ui->file_share_previous_group
+        ? lv_group_get_focused(ui->file_share_previous_group) : nullptr;
+    ui->file_share_open = true;
+    ui->file_share_approval_visible = false;
+    ui->file_share_decision_pending = false;
+    lv_obj_add_flag(ui->view.file_share_approve_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui->view.file_share_reject_button, LV_OBJ_FLAG_HIDDEN);
+    populate_file_share_group(ui);
+    capture_file_share_input(ui);
+    if (ui->file_share_directory[0])
+        lv_label_set_text(ui->view.file_share_path, ui->file_share_directory);
+    else
+        lv_label_set_text(ui->view.file_share_path, "$HOME/Downloads");
+    lv_obj_remove_flag(ui->view.file_share_scrim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui->view.file_share_scrim);
+    lv_obj_update_layout(ui->view.file_share_scrim);
+}
+
+static void file_share_close_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (ui) close_file_share_panel(ui);
+}
+
+static void file_share_approval_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(event));
+    if (!ui || !ui->input_enabled || !ui->file_share_open || !ui->file_share_approval_visible ||
+        ui->file_share_decision_pending) return;
+    ui->file_share_decision_accepted = target == ui->view.file_share_approve_button;
+    ui->file_share_decision_pending = true;
+}
+
+static void file_share_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->input_enabled || !ui->session_user[0] || !ui->quick_panel_open ||
+        ui->power_confirmation_open || ui->shutdown_visible)
+        return;
+    ui->pending_app = nullptr;
+    open_file_share_panel(ui);
+}
+
 static void app_clicked(lv_event_t *event)
 {
     auto *ui  = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
     auto *app = static_cast<launcher_app_t *>(lv_obj_get_user_data(lv_event_get_current_target_obj(event)));
-    if (ui && app) ui->pending_app = app;
+    if (ui && ui->input_enabled && !ui->quick_panel_open && !ui->file_share_open && !ui->shutdown_visible && app)
+        ui->pending_app = app;
+}
+
+static void level_changed(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    lv_obj_t *slider = lv_event_get_target_obj(event);
+    if (!ui || !ui->input_enabled || !ui->quick_panel_open || ui->power_confirmation_open ||
+        ui->shutdown_visible || lv_obj_has_state(slider, LV_STATE_DISABLED)) return;
+    const bool brightness = slider == ui->view.brightness_slider;
+    const int value = lv_slider_get_value(slider);
+    if (brightness) ui->brightness_request = value;
+    else ui->volume_request = value;
+    lv_label_set_text_fmt(brightness ? ui->view.brightness_label : ui->view.volume_label, "%d%%", value);
+}
+
+static void power_clicked(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->input_enabled || !ui->quick_panel_open || ui->power_confirmation_open ||
+        ui->shutdown_visible || lv_obj_has_state(ui->view.power_button, LV_STATE_DISABLED)) return;
+    ui->pending_app = nullptr;
+    ui->pull_tracking = false;
+    ui->power_confirmation_open = true;
+    ui->power_busy = false;
+    lv_label_set_text(ui->view.power_confirm_title, "Power off?");
+    lv_label_set_text(ui->view.power_confirm_hint, "This will turn off your device.");
+    lv_obj_remove_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_state(ui->view.power_confirm_button, LV_STATE_DISABLED);
+    lv_obj_remove_state(ui->view.power_cancel_button, LV_STATE_DISABLED);
+    lv_obj_remove_flag(ui->view.power_confirm_scrim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui->view.power_confirm_scrim);
+    populate_quick_panel_group(ui);
+    lv_group_focus_obj(ui->view.power_cancel_button);
+}
+
+static void power_cancelled(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (ui && !ui->power_busy) close_power_confirmation(ui);
+}
+
+static void power_confirmed(lv_event_t *event)
+{
+    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
+    if (!ui || !ui->input_enabled || !ui->power_confirmation_open || ui->power_busy ||
+        lv_obj_has_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN)) return;
+    ui->power_request = true;
+    ui->power_busy = true;
+    lv_label_set_text(ui->view.power_confirm_title, "Powering off");
+    lv_label_set_text(ui->view.power_confirm_hint, "Please wait...");
+    lv_obj_add_state(ui->view.power_confirm_button, LV_STATE_DISABLED);
+    lv_obj_add_state(ui->view.power_cancel_button, LV_STATE_DISABLED);
+    populate_quick_panel_group(ui);
 }
 
 static void update_page_indicator(launcher_ui_t *ui, size_t active_page)
@@ -341,12 +670,19 @@ static size_t current_page_anchor(const launcher_ui_t *ui)
 
 static bool focused_app_index(const launcher_ui_t *ui, size_t *index)
 {
+    if (ui->quick_panel_open) return false;
     lv_group_t *group = lv_group_get_default();
     lv_obj_t *focused = group ? lv_group_get_focused(group) : nullptr;
     if (!focused || !ui->pages) return false;
 
+    size_t active_page = ui->active_page;
+    if (lv_obj_t *active = lv_tileview_get_tile_active(ui->pages)) {
+        const uint32_t active_index = lv_obj_get_index(active);
+        if (active_index < lv_obj_get_child_count(ui->pages)) active_page = active_index;
+    }
     const uint32_t page_count = lv_obj_get_child_count(ui->pages);
     for (uint32_t page_index = 0; page_index < page_count; ++page_index) {
+        if (page_index != active_page) continue;
         lv_obj_t *page             = lv_obj_get_child(ui->pages, (int32_t)page_index);
         const uint32_t child_count = lv_obj_get_child_count(page);
         for (uint32_t child_index = 0; child_index < child_count; ++child_index) {
@@ -362,6 +698,112 @@ static bool focused_app_index(const launcher_ui_t *ui, size_t *index)
         }
     }
     return false;
+}
+
+/* Find a tile by registry index.  Pages contain only application buttons in
+ * normal operation; scanning user data also keeps this correct for an empty
+ * state label and for the last, partially filled page. */
+static lv_obj_t *app_tile_at_index(const launcher_ui_t *ui, size_t index)
+{
+    if (!ui || !ui->pages || !ui->registry || index >= ui->registry->count) return nullptr;
+    const uint32_t page_count = lv_obj_get_child_count(ui->pages);
+    for (uint32_t page_index = 0; page_index < page_count; ++page_index) {
+        lv_obj_t *page             = lv_obj_get_child(ui->pages, (int32_t)page_index);
+        const uint32_t child_count = lv_obj_get_child_count(page);
+        for (uint32_t child_index = 0; child_index < child_count; ++child_index) {
+            lv_obj_t *tile = lv_obj_get_child(page, (int32_t)child_index);
+            if (lv_obj_get_user_data(tile) == &ui->registry->apps[index]) return tile;
+        }
+    }
+    return nullptr;
+}
+
+static size_t active_page_for_navigation(const launcher_ui_t *ui)
+{
+    if (!ui || !ui->pages) return 0;
+    lv_obj_t *active = lv_tileview_get_tile_active(ui->pages);
+    if (!active) return ui->active_page;
+    const uint32_t page_count = lv_obj_get_child_count(ui->pages);
+    const uint32_t page_index = lv_obj_get_index(active);
+    return page_index < page_count ? page_index : ui->active_page;
+}
+
+static bool focus_app_index(launcher_ui_t *ui, size_t index)
+{
+    lv_obj_t *tile = app_tile_at_index(ui, index);
+    if (!tile) return false;
+
+    lv_group_t *group = lv_group_get_default();
+    if (!group) return false;
+    /* The AppKit normally installs the default group before creating the
+     * launcher.  Adding lazily also makes the public key handler work when a
+     * group is attached after a screen was already built. */
+    if (lv_obj_get_group(tile) != group) {
+        if (lv_obj_get_group(tile)) lv_group_remove_obj(tile);
+        lv_group_add_obj(group, tile);
+    }
+
+    const size_t page = ui->apps_per_page ? index / ui->apps_per_page : 0;
+    if (ui->pages && page != active_page_for_navigation(ui)) {
+        lv_tileview_set_tile_by_index(ui->pages, (uint32_t)page, 0, LV_ANIM_OFF);
+        update_page_indicator(ui, page);
+    }
+    lv_group_focus_obj(tile);
+    return lv_group_get_focused(group) == tile;
+}
+
+static bool navigation_target(const launcher_ui_t *ui, size_t current, uint32_t key, size_t *target)
+{
+    if (!ui || !target || !ui->registry || current >= ui->registry->count || ui->apps_per_page == 0 ||
+        ui->columns <= 0)
+        return false;
+
+    const size_t page       = current / ui->apps_per_page;
+    const size_t page_start = page * ui->apps_per_page;
+    const size_t page_end   = (page_start + ui->apps_per_page < ui->registry->count)
+                                ? page_start + ui->apps_per_page
+                                : ui->registry->count;
+    const size_t local      = current - page_start;
+    const size_t row        = local / (size_t)ui->columns;
+
+    switch (key) {
+        case LV_KEY_LEFT:
+            if (local > 0) {
+                *target = current - 1;
+                return true;
+            }
+            if (page > 0) {
+                *target = page_start - 1;
+                return true;
+            }
+            return false;
+        case LV_KEY_RIGHT:
+            if (current + 1 < page_end) {
+                *target = current + 1;
+                return true;
+            }
+            if (page_end < ui->registry->count) {
+                *target = page_end;
+                return true;
+            }
+            return false;
+        case LV_KEY_UP:
+            if (row > 0) {
+                *target = current - (size_t)ui->columns;
+                return true;
+            }
+            return false;
+        case LV_KEY_DOWN: {
+            const size_t candidate = current + (size_t)ui->columns;
+            if (candidate < page_end) {
+                *target = candidate;
+                return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
 }
 
 static bool app_index_by_id(const launcher_ui_t *ui, const char *id, size_t *index)
@@ -492,8 +934,6 @@ static layout_metrics_t calculate_layout(const launcher_ui_t *ui)
     metrics.apps_per_page = (size_t)(metrics.columns * metrics.rows);
     if (metrics.apps_per_page > LAUNCHER_APPS_PER_PAGE) metrics.apps_per_page = LAUNCHER_APPS_PER_PAGE;
 
-    metrics.panel_height = landscape ? 190 : 260;
-    if (metrics.panel_height > metrics.height) metrics.panel_height = metrics.height;
     return metrics;
 }
 
@@ -504,13 +944,19 @@ static void apply_chrome_layout(launcher_ui_t *ui, const layout_metrics_t &metri
         lv_obj_remove_flag(ui->view.home_indicator, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(ui->view.home_indicator, LV_OBJ_FLAG_HIDDEN);
-    launcher_view_layout_quick_panel(&ui->view, metrics.panel_height);
+    const int32_t panel_height = launcher_view_layout_quick_panel(&ui->view, metrics.width, metrics.height);
     if (!ui->quick_panel_open) {
         lv_anim_delete(ui->view.quick_panel, animate_object_y);
-        lv_obj_set_y(ui->view.quick_panel, -metrics.panel_height);
+        lv_obj_set_y(ui->view.quick_panel, -panel_height);
     }
     lv_label_set_text(ui->view.orientation_label,
                       ui->orientation == LAUNCHER_ORIENTATION_LANDSCAPE ? "Portrait" : "Landscape");
+    char session_label[sizeof(ui->session_user) + 12];
+    if (ui->session_user[0] && metrics.width >= 480)
+        snprintf(session_label, sizeof(session_label), "Sign out: %s", ui->session_user);
+    else
+        snprintf(session_label, sizeof(session_label), "Sign out");
+    lv_label_set_text(ui->view.session_label, session_label);
 }
 
 static void relayout(launcher_ui_t *ui)
@@ -552,6 +998,11 @@ static void screen_deleted(lv_event_t *event)
     if (!ui) return;
     ui->pages = nullptr;
     memset(&ui->view, 0, sizeof(ui->view));
+    ui->file_share_previous_focus = nullptr;
+    restore_file_share_focus(ui);
+    ui->quick_panel_previous_focus = nullptr;
+    restore_quick_panel_focus(ui);
+    ui->quick_panel_open = false;
 }
 
 launcher_ui_t *launcher_ui_create(launcher_registry_t *registry)
@@ -573,7 +1024,23 @@ launcher_ui_t *launcher_ui_create(launcher_registry_t *registry)
     relayout(ui);
 
     lv_obj_add_event_cb(ui->view.quick_scrim, scrim_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.file_share_scrim, file_share_close_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.file_share_close_button, file_share_close_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.file_share_approve_button, file_share_approval_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.file_share_reject_button, file_share_approval_clicked, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->view.orientation_button, orientation_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.file_share_button, file_share_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.lock_button, lock_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.session_button, logout_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.brightness_slider, level_changed, LV_EVENT_VALUE_CHANGED, ui);
+    lv_obj_add_event_cb(ui->view.volume_slider, level_changed, LV_EVENT_VALUE_CHANGED, ui);
+    for (lv_obj_t *control : {ui->view.orientation_button, ui->view.file_share_button, ui->view.lock_button,
+                              ui->view.session_button,
+                              ui->view.power_button, ui->view.brightness_slider, ui->view.volume_slider})
+        lv_obj_add_event_cb(control, quick_control_focused, LV_EVENT_FOCUSED, ui);
+    lv_obj_add_event_cb(ui->view.power_button, power_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.power_cancel_button, power_cancelled, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.power_confirm_button, power_confirmed, LV_EVENT_CLICKED, ui);
     attach_pull_down_input(ui);
     return ui;
 }
@@ -581,6 +1048,8 @@ launcher_ui_t *launcher_ui_create(launcher_registry_t *registry)
 void launcher_ui_destroy(launcher_ui_t *ui)
 {
     if (!ui) return;
+    restore_file_share_focus(ui);
+    restore_quick_panel_focus(ui);
     if (ui->input) {
         lv_indev_remove_event_cb_with_user_data(ui->input, pull_down_input_event, ui);
         ui->input = nullptr;
@@ -590,9 +1059,23 @@ void launcher_ui_destroy(launcher_ui_t *ui)
         lv_anim_delete(ui->view.quick_scrim, animate_object_opacity);
         lv_obj_remove_event_cb_with_user_data(ui->view.quick_scrim, scrim_clicked, ui);
     }
+    if (ui->view.file_share_scrim)
+        lv_obj_remove_event_cb_with_user_data(ui->view.file_share_scrim, file_share_close_clicked, ui);
+    if (ui->view.file_share_close_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.file_share_close_button, file_share_close_clicked, ui);
+    if (ui->view.file_share_approve_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.file_share_approve_button, file_share_approval_clicked, ui);
+    if (ui->view.file_share_reject_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.file_share_reject_button, file_share_approval_clicked, ui);
     if (ui->view.quick_panel) lv_anim_delete(ui->view.quick_panel, animate_object_y);
     if (ui->view.orientation_button)
         lv_obj_remove_event_cb_with_user_data(ui->view.orientation_button, orientation_clicked, ui);
+    if (ui->view.file_share_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.file_share_button, file_share_clicked, ui);
+    if (ui->view.session_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.session_button, logout_clicked, ui);
+    if (ui->view.lock_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.lock_button, lock_clicked, ui);
     if (ui->view.screen && ui->previous_screen && lv_obj_is_valid(ui->previous_screen) &&
         lv_screen_active() == ui->view.screen)
         lv_screen_load(ui->previous_screen);
@@ -603,6 +1086,11 @@ void launcher_ui_destroy(launcher_ui_t *ui)
 
 void launcher_ui_rebind_input(launcher_ui_t *ui)
 {
+    if (ui) {
+        ui->keyboard_pressed = false;
+        capture_quick_panel_input(ui);
+        capture_file_share_input(ui);
+    }
     if (!ui || !ui->view.screen || ui->input) return;
     ui->pull_tracking = false;
     attach_pull_down_input(ui);
@@ -671,6 +1159,9 @@ void launcher_ui_refresh_home(launcher_ui_t *ui)
 void launcher_ui_apply_orientation(launcher_ui_t *ui, launcher_orientation_t orientation)
 {
     if (!ui || !ui->view.screen) return;
+    close_file_share_panel(ui);
+    close_power_confirmation(ui);
+    restore_quick_panel_focus(ui);
     ui->orientation                 = orientation;
     ui->orientation_request_pending = false;
     ui->quick_panel_open            = false;
@@ -681,10 +1172,305 @@ void launcher_ui_apply_orientation(launcher_ui_t *ui, launcher_orientation_t ori
     relayout(ui);
 }
 
+void launcher_ui_set_session_user(launcher_ui_t *ui, const char *name)
+{
+    if (!ui || !ui->view.lock_button || !ui->view.session_button || !ui->view.file_share_button) return;
+    ui->session_user[0] = '\0';
+    if (name && name[0]) {
+        snprintf(ui->session_user, sizeof(ui->session_user), "%s", name);
+        lv_obj_clear_flag(ui->view.file_share_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        close_file_share_panel(ui);
+        lv_obj_add_flag(ui->view.file_share_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    relayout(ui);
+}
+
+bool launcher_ui_take_lock_request(launcher_ui_t *ui)
+{
+    if (!ui || !ui->lock_request) return false;
+    ui->lock_request = false;
+    return true;
+}
+
+bool launcher_ui_take_logout_request(launcher_ui_t *ui)
+{
+    if (!ui || !ui->logout_request) return false;
+    ui->logout_request = false;
+    return true;
+}
+
+void launcher_ui_set_system_controls(launcher_ui_t *ui, bool brightness_available, int brightness_percent,
+                                     bool volume_available, int volume_percent, bool power_available)
+{
+    if (!ui || !ui->view.screen) return;
+    const bool capability_changed = brightness_available == lv_obj_has_state(ui->view.brightness_slider, LV_STATE_DISABLED) ||
+        volume_available == lv_obj_has_state(ui->view.volume_slider, LV_STATE_DISABLED) ||
+        power_available == lv_obj_has_state(ui->view.power_button, LV_STATE_DISABLED);
+    if (!brightness_available || (!lv_slider_is_dragged(ui->view.brightness_slider) && ui->brightness_request < 0))
+        launcher_view_set_control_level(ui->view.brightness_slider, ui->view.brightness_label,
+                                        brightness_available, brightness_percent);
+    if (!volume_available || (!lv_slider_is_dragged(ui->view.volume_slider) && ui->volume_request < 0))
+        launcher_view_set_control_level(ui->view.volume_slider, ui->view.volume_label, volume_available, volume_percent);
+    if (!brightness_available) ui->brightness_request = -1;
+    if (!volume_available) ui->volume_request = -1;
+    if (power_available) lv_obj_remove_state(ui->view.power_button, LV_STATE_DISABLED);
+    else lv_obj_add_state(ui->view.power_button, LV_STATE_DISABLED);
+    if (capability_changed && ui->quick_panel_group && !ui->power_confirmation_open) {
+        lv_obj_t *focused = lv_group_get_focused(ui->quick_panel_group);
+        populate_quick_panel_group(ui);
+        if (focused && !lv_obj_has_state(focused, LV_STATE_DISABLED)) lv_group_focus_obj(focused);
+    }
+}
+
+void launcher_ui_set_software_brightness(launcher_ui_t *ui, bool enabled, int percent)
+{
+    if (!ui) return;
+    launcher_view_set_software_brightness(&ui->view, enabled, percent);
+}
+
+bool launcher_ui_take_brightness_request(launcher_ui_t *ui, int *percent)
+{
+    if (!ui || !percent || ui->brightness_request < 0) return false;
+    *percent = ui->brightness_request;
+    ui->brightness_request = -1;
+    return true;
+}
+
+bool launcher_ui_take_volume_request(launcher_ui_t *ui, int *percent)
+{
+    if (!ui || !percent || ui->volume_request < 0) return false;
+    *percent = ui->volume_request;
+    ui->volume_request = -1;
+    return true;
+}
+
+bool launcher_ui_take_power_request(launcher_ui_t *ui)
+{
+    if (!ui || !ui->power_request) return false;
+    ui->power_request = false;
+    return true;
+}
+
+void launcher_ui_set_file_share_directory(launcher_ui_t *ui, const char *path)
+{
+    if (!ui) return;
+    snprintf(ui->file_share_directory, sizeof(ui->file_share_directory), "%s", path && path[0] ? path : "");
+    if (!ui->view.file_share_path) return;
+    if (ui->file_share_directory[0]) lv_label_set_text(ui->view.file_share_path, ui->file_share_directory);
+    else lv_label_set_text(ui->view.file_share_path, "$HOME/Downloads");
+}
+
+void launcher_ui_set_file_share_status(launcher_ui_t *ui, const char *status)
+{
+    if (!ui || !ui->view.file_share_status) return;
+    lv_label_set_text(ui->view.file_share_status, status && status[0] ? status : "Ready to receive files from your browser.");
+}
+
+void launcher_ui_set_file_share_approval(launcher_ui_t *ui, const char *filename, uint64_t size, bool pending)
+{
+    if (!ui || !ui->view.file_share_status || !ui->view.file_share_approve_button ||
+        !ui->view.file_share_reject_button) return;
+    ui->file_share_approval_visible = pending && filename && filename[0];
+    ui->file_share_decision_pending = false;
+    if (ui->file_share_approval_visible) {
+        char message[512];
+        snprintf(message, sizeof(message), "Receive \"%.255s\" (%llu bytes)?",
+                 filename, static_cast<unsigned long long>(size));
+        lv_label_set_text(ui->view.file_share_status, message);
+        lv_obj_remove_flag(ui->view.file_share_approve_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(ui->view.file_share_reject_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui->view.file_share_approve_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui->view.file_share_reject_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    populate_file_share_group(ui);
+}
+
+bool launcher_ui_take_file_share_decision(launcher_ui_t *ui, bool *accepted)
+{
+    if (!ui || !accepted || !ui->file_share_decision_pending) return false;
+    *accepted = ui->file_share_decision_accepted;
+    ui->file_share_decision_pending = false;
+    return true;
+}
+
+bool launcher_ui_file_share_open(const launcher_ui_t *ui)
+{
+    return ui && ui->input_enabled && ui->file_share_open;
+}
+
+void launcher_ui_set_power_result(launcher_ui_t *ui, bool success, bool simulated)
+{
+    if (!ui || !ui->view.screen || !ui->power_confirmation_open) return;
+    ui->power_busy = success && !simulated;
+    lv_label_set_text(ui->view.power_confirm_title, success ? (simulated ? "Simulation complete" : "Powering off") : "Couldn't power off");
+    lv_label_set_text(ui->view.power_confirm_hint, success ? (simulated ? "Your computer will stay on." : "Please wait...") :
+                                                           "Please try again.");
+    if (success) lv_obj_add_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_state(ui->view.power_confirm_button, LV_STATE_DISABLED);
+    if (!ui->power_busy) lv_obj_remove_state(ui->view.power_cancel_button, LV_STATE_DISABLED);
+    populate_quick_panel_group(ui);
+    if (!ui->power_busy) lv_group_focus_obj(ui->view.power_cancel_button);
+}
+
+void launcher_ui_set_input_enabled(launcher_ui_t *ui, bool enabled)
+{
+    if (!ui) return;
+    ui->input_enabled = enabled;
+    ui->keyboard_pressed = false;
+    ui->pull_tracking = false;
+    if (!enabled) {
+        ui->pending_app = nullptr;
+        ui->orientation_request_pending = false;
+        ui->lock_request = false;
+        ui->logout_request = false;
+        ui->brightness_request = -1;
+        ui->volume_request = -1;
+        ui->power_request = false;
+        close_file_share_panel(ui);
+        play_quick_panel(ui, false);
+    }
+}
+
+bool launcher_ui_handle_key(launcher_ui_t *ui, uint32_t key)
+{
+    if (!ui || !ui->view.screen || !ui->input_enabled) return false;
+    if (ui->shutdown_visible) return true;
+
+    /* Launcher owns escape while it is visible.  In particular this keeps a
+     * global keyboard handler from treating Esc on the home screen as an app
+     * exit request. */
+    if (key == LV_KEY_ESC) {
+        if (ui->file_share_open) {
+            close_file_share_panel(ui);
+        } else if (ui->power_confirmation_open) {
+            if (!ui->power_busy) close_power_confirmation(ui);
+        } else if (ui->quick_panel_open) play_quick_panel(ui, false);
+        return true;
+    }
+    if (ui->file_share_open) {
+        if (key == LV_KEY_ENTER) {
+            lv_obj_t *focused = ui->file_share_group ? lv_group_get_focused(ui->file_share_group) : nullptr;
+            if (focused) lv_obj_send_event(focused, LV_EVENT_CLICKED, nullptr);
+        } else if (ui->file_share_group) {
+            if (key == LV_KEY_LEFT || key == LV_KEY_UP || key == LV_KEY_PREV)
+                lv_group_focus_prev(ui->file_share_group);
+            else if (key == LV_KEY_RIGHT || key == LV_KEY_DOWN || key == LV_KEY_NEXT)
+                lv_group_focus_next(ui->file_share_group);
+        }
+        return true;
+    }
+    if (key == ' ') {
+        if (!ui->power_confirmation_open) play_quick_panel(ui, !ui->quick_panel_open);
+        return true;
+    }
+
+    const bool directional = key == LV_KEY_LEFT || key == LV_KEY_RIGHT || key == LV_KEY_UP || key == LV_KEY_DOWN;
+    const bool tab_navigation = key == LV_KEY_NEXT || key == LV_KEY_PREV;
+    if (!directional && key != LV_KEY_ENTER && !(ui->quick_panel_open && tab_navigation)) return false;
+    if (ui->quick_panel_open) {
+        lv_group_t *group = ui->quick_panel_group;
+        lv_obj_t *focused = group ? lv_group_get_focused(group) : nullptr;
+        if (!focused || ui->power_busy) return true;
+        const bool slider = focused == ui->view.brightness_slider || focused == ui->view.volume_slider;
+        if (slider && directional) {
+            // LVGL's slider key handler applies a one-unit nudge after the
+            // indev callback. Compensate so the user-facing step is exactly
+            // five percent in each direction.
+            const int step = key == LV_KEY_LEFT || key == LV_KEY_DOWN ? -4 : 4;
+            lv_slider_set_value(focused, std::clamp(lv_slider_get_value(focused) + step,
+                                static_cast<int>(lv_slider_get_min_value(focused)),
+                                static_cast<int>(lv_slider_get_max_value(focused))), LV_ANIM_OFF);
+            lv_obj_send_event(focused, LV_EVENT_VALUE_CHANGED, nullptr);
+            return true;
+        }
+        if (key == LV_KEY_ENTER) {
+            if (!slider) lv_obj_send_event(focused, LV_EVENT_CLICKED, nullptr);
+        } else {
+            const int step = key == LV_KEY_LEFT || key == LV_KEY_UP || key == LV_KEY_PREV ? -1 : 1;
+            if (step < 0) lv_group_focus_prev(group);
+            else lv_group_focus_next(group);
+        }
+        return true;
+    }
+    if (!ui->registry || ui->registry->count == 0) return true;
+
+    size_t current = 0;
+    const bool has_focus = focused_app_index(ui, &current);
+    if (!has_focus) {
+        const size_t page = active_page_for_navigation(ui);
+        const size_t first = page * ui->apps_per_page;
+        current           = first < ui->registry->count ? first : 0;
+        /* A first direction key establishes focus without an extra move. */
+        if (directional) {
+            focus_app_index(ui, current);
+            return true;
+        }
+    }
+
+    if (key == LV_KEY_ENTER) {
+        if (!has_focus) focus_app_index(ui, current);
+        lv_obj_t *tile = app_tile_at_index(ui, current);
+        if (tile) ui->pending_app = static_cast<launcher_app_t *>(lv_obj_get_user_data(tile));
+        return true;
+    }
+
+    size_t target = current;
+    if (navigation_target(ui, current, key, &target) && target != current) focus_app_index(ui, target);
+    return true;
+}
+
+bool launcher_ui_handle_keyboard_input(launcher_ui_t *ui, lv_indev_t *keyboard)
+{
+    if (!ui || !ui->view.screen || !keyboard || !ui->input_enabled) return false;
+    // Also capture keyboards created or reconnected while the panel is open.
+    if (ui->quick_panel_group && lv_indev_get_group(keyboard) != ui->quick_panel_group)
+        lv_indev_set_group(keyboard, ui->quick_panel_group);
+    if (ui->file_share_group && lv_indev_get_group(keyboard) != ui->file_share_group)
+        lv_indev_set_group(keyboard, ui->file_share_group);
+    const uint32_t key = lv_indev_get_key(keyboard);
+    const bool directional = key == LV_KEY_LEFT || key == LV_KEY_RIGHT || key == LV_KEY_UP || key == LV_KEY_DOWN;
+    const bool handled = directional || key == LV_KEY_ENTER || key == LV_KEY_ESC || key == ' ';
+    if (lv_indev_get_state(keyboard) == LV_INDEV_STATE_RELEASED) {
+        ui->keyboard_pressed = false;
+        return handled;
+    }
+
+    // LVGL sends the indev KEY event on every poll, even when evdev has no new
+    // event. Only a new press moves immediately; a held direction repeats at
+    // a deliberate rate, independent of polling and evdev queue draining.
+    const bool new_press = !ui->keyboard_pressed || ui->keyboard_key != key;
+    ui->keyboard_pressed = true;
+    ui->keyboard_key = key;
+    if (new_press) {
+        ui->keyboard_action_tick = lv_tick_get();
+        ui->keyboard_repeating = false;
+    } else {
+        const uint32_t delay = ui->keyboard_repeating ? KEYBOARD_REPEAT_INTERVAL_MS : KEYBOARD_REPEAT_DELAY_MS;
+        if (!directional || lv_tick_elaps(ui->keyboard_action_tick) < delay) return handled;
+        ui->keyboard_action_tick = lv_tick_get();
+        ui->keyboard_repeating = true;
+    }
+
+    if (!handled) return false;
+    const bool consumed = launcher_ui_handle_key(ui, key);
+    // Enter launches on press. Suppress LVGL's later release-to-click path,
+    // which would otherwise queue the same application a second time.
+    if (consumed && key == LV_KEY_ENTER) lv_indev_wait_release(keyboard);
+    return consumed;
+}
+
 void launcher_ui_show_shutdown(launcher_ui_t *ui)
 {
     if (!ui || !ui->view.shutdown_scrim || ui->shutdown_visible) return;
     ui->shutdown_visible = true;
+    ui->power_request = false;
+    close_file_share_panel(ui);
     play_quick_panel(ui, false);
     lv_obj_clear_flag(ui->view.shutdown_scrim, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui->view.shutdown_scrim);
