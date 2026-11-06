@@ -140,6 +140,13 @@ SDK or `CMAKE_PREFIX_PATH` setup is needed. If reusing a previous binary-SDK
 build directory, reset its CMake cache once with
 `cmake --fresh --preset host-simulator` (CMake 3.24+).
 
+Launcher and the independent applications compile LVGL with
+`LV_DEF_REFR_PERIOD=20`, matching the CM0 panel's 50 Hz mode. This sets the
+default display, animation, and input polling period to 20 ms, including with
+older pinned AppKit revisions. Each statically linked executable must be
+rebuilt and redeployed for the change to take effect. Actual frame rate still
+depends on rendering cost; video playback and emulation retain their own clocks.
+
 Sign in to the host simulator with username `pi` and password `raspberry`.
 These virtual credentials support sign-in, screen lock/unlock, and sign-out
 without creating or authenticating a system account. Applications run as the

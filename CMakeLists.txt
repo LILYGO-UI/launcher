@@ -23,6 +23,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Compile LVGL and the application with a 20 ms display/animation cadence (50 Hz),
+# including when the pinned AppKit predates the shared 50 Hz default.
+add_compile_definitions(LV_DEF_REFR_PERIOD=20)
 find_package(LilyGoUI CONFIG REQUIRED)
 add_subdirectory(transport)
 
