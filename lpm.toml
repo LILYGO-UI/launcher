@@ -2,7 +2,7 @@ schema_version = 1
 
 [project]
 package = "lilygo-ui-launcher"
-version = "0.1.2"
+version = "0.1.3"
 app_id = "cc.lilygo.ui.Launcher"
 title = "Launcher"
 summary = "System application launcher for LILYGO Linux products."
