@@ -33,15 +33,18 @@ int main(int argc, char **argv)
     std::string error;
     require(session.initialize(error), "initialize", error);
 
-    if (mode == "full_begin" || mode == "full_finish") {
+    if (mode == "full_begin" || mode == "full_finish" || mode == "new_begin" || mode == "new_finish") {
         launcher::SetupFlow flow("/var/lib/lilygo-ui-launcher", false);
         require(flow.initialize(session.setup_required(), session.setup_account_saved(), error), "full setup progress", error);
         require(flow.active(), "full setup is active");
-        if (mode == "full_begin") {
+        if (mode == "full_begin" || mode == "new_begin") {
             require(flow.advance(launcher::SetupStage::Account, flow.region(), error), "save regional step", error);
             require(session.login(username, password, true, error, false), "save account without cleanup", error);
             require(session.setup_account_saved(), "account committed");
-            require(access("/var/lib/lilygo-ui-launcher/first-boot-pending", F_OK) == 0, "retain upstream request");
+            const char *journal = mode == "new_begin"
+                ? "/var/lib/lilygo-ui-launcher/first-boot-new-user"
+                : "/var/lib/lilygo-ui-launcher/first-boot-pending";
+            require(access(journal, F_OK) == 0, "retain account recovery request");
             require(flow.advance(launcher::SetupStage::Network, flow.region(), error), "save network step", error);
         } else {
             require(flow.stage() == launcher::SetupStage::Network, "resume network after restart");

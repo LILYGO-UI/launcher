@@ -1,0 +1,109 @@
+#!/bin/sh
+set -eu
+umask 022
+
+# Generic Debian regional setup. raspi-config remains the Raspberry Pi backend.
+# The root override exists for isolated fixture tests; production uses /.
+root=${LILYGO_UI_LAUNCHER_ROOT:-}
+fail() { printf 'Launcher regional setup: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || fail 'root privileges are required'
+operation=${1:-}
+value=${2:-}
+temporary=
+trap '[ -z "$temporary" ] || rm -f "$temporary"' EXIT HUP INT TERM
+
+begin_file() {
+    destination="$root$1"
+    mkdir -p "$(dirname "$destination")"
+    temporary=$(mktemp "$destination.XXXXXX")
+    chmod 0644 "$temporary"
+}
+commit_file() {
+    sync -f "$temporary"
+    mv -f "$temporary" "$destination"
+    temporary=
+    sync -f "$(dirname "$destination")"
+}
+apply_country() {
+    # A device with Ethernet only must still be able to finish setup. Persist
+    # cfg80211's module option for adapters loaded after this boot.
+    for phy in "$root"/sys/class/ieee80211/*; do
+        [ -e "$phy" ] || continue
+        iw reg set "$value"
+        break
+    done
+}
+
+case "$operation" in
+    country)
+        [ "$#" = 2 ] || fail 'country requires one value'
+        case "$value" in [A-Z][A-Z]) ;; *) fail 'invalid country' ;; esac
+        awk -v value="$value" '$1 == value { found=1 } END { exit !found }' \
+            "$root/usr/share/zoneinfo/iso3166.tab" || fail 'unknown country'
+        apply_country
+        begin_file /etc/default/crda
+        printf 'REGDOMAIN=%s\n' "$value" > "$temporary"
+        commit_file
+        begin_file /etc/modprobe.d/lilygo-ui-regdom.conf
+        printf 'options cfg80211 ieee80211_regdom=%s\n' "$value" > "$temporary"
+        commit_file
+        ;;
+    restore-country)
+        [ "$#" = 1 ] || fail 'restore-country takes no arguments'
+        [ -f "$root/etc/default/crda" ] || exit 0
+        value=$(sed -n 's/^REGDOMAIN=\([A-Z][A-Z]\)$/\1/p' "$root/etc/default/crda")
+        case "$value" in [A-Z][A-Z]) ;; *) fail 'invalid saved country' ;; esac
+        apply_country
+        ;;
+    locale)
+        [ "$#" = 2 ] || fail 'locale requires one value'
+        case "$value" in ''|*[!A-Za-z0-9_.@-]*) fail 'invalid locale' ;; esac
+        awk -v value="$value" '$1 == value && $2 == "UTF-8" { found=1 } END { exit !found }' \
+            "$root/usr/share/i18n/SUPPORTED" || fail 'unknown UTF-8 locale'
+        begin_file /etc/locale.gen
+        if [ -f "$destination" ]; then cat "$destination" > "$temporary"; fi
+        if ! awk -v value="$value" '$1 == value && $2 == "UTF-8" { found=1 } END { exit !found }' "$temporary"; then
+            printf '\n%s UTF-8\n' "$value" >> "$temporary"
+        fi
+        commit_file
+        locale-gen
+        # Explicit paths keep old /etc/default/locale and Debian 13's
+        # /etc/locale.conf consistent, clearing stale LANGUAGE/LC_* overrides.
+        update-locale --locale-file "$root/etc/locale.conf" --reset "LANG=$value"
+        update-locale --locale-file "$root/etc/default/locale" --reset "LANG=$value"
+        ;;
+    timezone)
+        [ "$#" = 2 ] || fail 'timezone requires one value'
+        case "$value" in ''|/*|*..*|*[!A-Za-z0-9/_+-]*) fail 'invalid timezone' ;; esac
+        [ "$(head -c 4 "$root/usr/share/zoneinfo/$value")" = TZif ] || fail 'unknown timezone'
+        begin_file /etc/timezone
+        printf '%s\n' "$value" > "$temporary"
+        commit_file
+        begin_file /etc/localtime
+        rm "$temporary"
+        ln -s "/usr/share/zoneinfo/$value" "$temporary"
+        mv -Tf "$temporary" "$destination"
+        temporary=
+        sync -f "$root/etc"
+        ;;
+    keyboard)
+        [ "$#" = 2 ] || fail 'keyboard requires one value'
+        case "$value" in ''|*[!A-Za-z0-9_-]*) fail 'invalid keyboard' ;; esac
+        rules="$root/usr/share/X11/xkb/rules/base.lst"
+        [ -f "$rules" ] || rules="$root/usr/share/X11/xkb/rules/evdev.lst"
+        awk -v value="$value" '$1 == "!" { layout=($2 == "layout"); next } layout && $1 == value { found=1 } END { exit !found }' \
+            "$rules" || fail 'unknown keyboard layout'
+        begin_file /etc/default/keyboard
+        if [ -f "$destination" ]; then
+            sed '/^[[:space:]]*XKBLAYOUT[[:space:]]*=/d; /^[[:space:]]*XKBVARIANT[[:space:]]*=/d' "$destination" > "$temporary"
+        else
+            printf 'XKBMODEL="pc105"\nXKBOPTIONS=""\n' > "$temporary"
+        fi
+        printf '\nXKBLAYOUT="%s"\nXKBVARIANT=""\n' "$value" >> "$temporary"
+        commit_file
+        # LVGL consumes this file itself; setupcon also updates any attached
+        # console keyboard. A headless tty is valid on embedded boards.
+        if command -v setupcon >/dev/null 2>&1; then setupcon --save-only; fi
+        ;;
+    *) fail 'usage: setup-region country|locale|timezone|keyboard VALUE, or restore-country' ;;
+esac

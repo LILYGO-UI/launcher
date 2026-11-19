@@ -4,7 +4,9 @@ umask 077
 
 # Account changes happen in the authenticated Launcher setup transaction. This
 # helper only captures pi-gen's request and retires it after the active account
-# has been committed. A fixture root keeps packaging tests off the host /etc.
+# has been committed. Generic Debian images have no UID 1000 and need no Pi
+# request: UserSession creates their owner and journals first-boot-new-user.
+# A fixture root keeps packaging tests off the host /etc.
 root=${LILYGO_UI_LAUNCHER_ROOT:-}
 state_dir=${LILYGO_UI_LAUNCHER_STATE_DIR:-$root/var/lib/lilygo-ui-launcher}
 pending_file="$state_dir/first-boot-pending"

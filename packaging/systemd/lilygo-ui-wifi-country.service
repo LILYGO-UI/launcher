@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore LILYGO Wi-Fi regulatory country
+After=systemd-udev-settle.service
+Before=NetworkManager.service
+ConditionPathExists=/etc/default/crda
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-setup-region restore-country
+
+[Install]
+WantedBy=multi-user.target

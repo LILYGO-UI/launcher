@@ -23,6 +23,9 @@ public:
     UserSession &operator=(const UserSession &) = delete;
 
     bool initialize(std::string &error);
+    // Embedded images can delegate authentication to their invoking login or
+    // init service. This mode keeps the current UID/GID and has no lock/logout.
+    bool local_session() const;
     bool setup_available() const;
     bool setup_required() const;
     bool setup_account_saved() const;
@@ -37,7 +40,8 @@ public:
     // Check the signed-in identity's password without changing its session.
     bool reauthenticate(const std::string &password, std::string &error);
     void logout();
-    // Process identity for device sessions; null for simulator and signed-out sessions.
+    // Process identity for authenticated device sessions; null when credentials
+    // must be inherited (local/simulator sessions), or after sign-out.
     const launcher_user_t *user() const;
 
 private:

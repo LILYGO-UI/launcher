@@ -159,6 +159,7 @@ void helpers_apply_all_settings_and_clear_old_keyboard_variants()
 {
     Fixture fixture;
     fixture.catalogs();
+    fixture.write("/usr/bin/raspi-config", "Pi capability fixture\n");
     fixture.settings({});
     fixture.write("/etc/default/keyboard", "XKBLAYOUT=\"gb\"\nXKBVARIANT=\"dvorak\"\n");
     const auto catalog = launcher::load_setup_catalog(fixture.root, false);
@@ -190,6 +191,37 @@ void helpers_apply_all_settings_and_clear_old_keyboard_variants()
     std::string error;
     assert(launcher::apply_setup_region(requested, catalog, runner, error, fixture.root, false));
     assert(error.empty() && calls.size() == 6);
+    const auto saved = launcher::load_setup_catalog(fixture.root, false);
+    assert(saved.current.country == requested.country && saved.current.locale == requested.locale);
+    assert(saved.current.timezone == requested.timezone && saved.current.keyboard == requested.keyboard);
+}
+
+void generic_debian_uses_distribution_helpers_without_pi_boot_files()
+{
+    Fixture fixture;
+    fixture.catalogs();
+    fixture.write("/etc/default/crda", "REGDOMAIN=GB\n");
+    fixture.write("/etc/default/keyboard", "XKBLAYOUT=gb\nXKBVARIANT=dvorak\n");
+    const auto catalog = launcher::load_setup_catalog(fixture.root, false);
+    const launcher::SetupRegion requested{"CN", "zh_CN.UTF-8", "Asia/Shanghai", "cn"};
+    std::vector<std::string> operations;
+    const auto runner = [&](const launcher::SetupCommand &command) {
+        assert(command.arguments.size() == 3);
+        assert(command.arguments[0] == "/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-setup-region");
+        const auto &operation = command.arguments[1];
+        const auto &value = command.arguments[2];
+        operations.push_back(operation);
+        if (operation == "country") fixture.write("/etc/default/crda", "REGDOMAIN=" + value + "\n");
+        else if (operation == "locale") fixture.write("/etc/locale.conf", "LANG=" + value + "\n");
+        else if (operation == "timezone") fixture.write("/etc/timezone", value + "\n");
+        else if (operation == "keyboard") fixture.write("/etc/default/keyboard", "XKBLAYOUT=" + value + "\nXKBVARIANT=\"\"\n");
+        else assert(false);
+        return launcher::SetupCommandResult{0, "", false};
+    };
+    std::string error;
+    assert(launcher::apply_setup_region(requested, catalog, runner, error, fixture.root, false));
+    assert(operations == std::vector<std::string>({"country", "locale", "timezone", "keyboard"}));
+    assert(!std::filesystem::exists(fixture.root + "/boot"));
     const auto saved = launcher::load_setup_catalog(fixture.root, false);
     assert(saved.current.country == requested.country && saved.current.locale == requested.locale);
     assert(saved.current.timezone == requested.timezone && saved.current.keyboard == requested.keyboard);
@@ -236,6 +268,7 @@ int main()
     missing_device_catalogs_fail_and_simulation_never_runs_commands();
     invalid_choices_are_rejected_before_mutation();
     helpers_apply_all_settings_and_clear_old_keyboard_variants();
+    generic_debian_uses_distribution_helpers_without_pi_boot_files();
     failed_or_unpersisted_operations_stop_and_can_retry();
     return 0;
 }

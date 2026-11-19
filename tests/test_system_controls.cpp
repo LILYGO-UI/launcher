@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -118,6 +119,43 @@ void unavailable_backlight_does_not_report_success()
     assert(!controls.set_brightness(40));
 }
 
+void volume_uses_shared_hardware_and_tracks_errors()
+{
+    Backlights files;
+    const fs::path root(files.directory);
+    const fs::path mixer = root / "amixer-mock";
+    const fs::path value = root / "volume";
+    std::ofstream(value) << "54\n";
+    std::ofstream script(mixer);
+    script << "#!/bin/sh\n"
+           << "value=\"$(dirname \"$0\")/volume\"\n"
+           << "[ -f \"$value\" ] || exit 1\n"
+           << "if [ \"$3\" = sset ]; then\n"
+           << "  printf '%s\\n' \"${5%\\%}\" > \"$value\"\n"
+           << "fi\n"
+           << "printf 'Playback [%s%%] [on]\\n' \"$(cat \"$value\")\"\n";
+    script.close();
+    assert(chmod(mixer.c_str(), 0700) == 0);
+    lilygo::ui::HardwarePaths paths;
+    paths.backlight_root = files.directory;
+    paths.amixer_program = mixer.string();
+    launcher::SystemControls controls(false, paths);
+    assert(controls.state().volume_available);
+    assert(controls.state().volume_percent == 54);
+    assert(controls.set_volume(160));
+    assert(controls.state().volume_percent == 100);
+    assert(controls.set_volume(-5));
+    assert(controls.state().volume_percent == 0);
+    std::ofstream(value) << "28\n";
+    assert(controls.refresh().volume_percent == 28);
+    fs::remove(value);
+    assert(!controls.set_volume(60));
+    assert(!controls.state().volume_available);
+    assert(!controls.error().empty());
+    fs::remove(mixer);
+    assert(!controls.refresh().volume_available);
+}
+
 #else
 
 void simulator_build_cannot_enable_hardware()
@@ -141,6 +179,7 @@ int main()
 #if !defined(LAUNCHER_SIMULATOR)
     brightness_tracks_device_and_stays_visible();
     unavailable_backlight_does_not_report_success();
+    volume_uses_shared_hardware_and_tracks_errors();
 #else
     simulator_build_cannot_enable_hardware();
 #endif

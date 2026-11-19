@@ -25,8 +25,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compile LVGL and the application with a 20 ms display/animation cadence (50 Hz),
 # including when the pinned AppKit predates the shared 50 Hz default.
-add_compile_definitions(LV_DEF_REFR_PERIOD=20)
+if(NOT LILYGO_UI_PLATFORM STREQUAL "k230")
+    add_compile_definitions(LV_DEF_REFR_PERIOD=20)
+endif()
 find_package(LilyGoUI CONFIG REQUIRED)
+set(_launcher_system_session_default ON)
+if(CM0_SIMULATOR OR LILYGO_UI_TARGET_OS STREQUAL "buildroot")
+    set(_launcher_system_session_default OFF)
+endif()
+option(LAUNCHER_SYSTEM_SESSION "Authenticate and manage Linux users through PAM"
+    ${_launcher_system_session_default})
+if(CM0_SIMULATOR AND LAUNCHER_SYSTEM_SESSION)
+    message(FATAL_ERROR "The host simulator cannot manage system login sessions")
+endif()
 add_subdirectory(transport)
 
 add_library(launcher_logging STATIC src/logging.cpp)
@@ -87,16 +98,14 @@ if(CM0_SIMULATOR)
         LAUNCHER_SIMULATOR=1)
 endif()
 
-if(NOT CM0_SIMULATOR)
-    target_compile_definitions(launcher_core PRIVATE LAUNCHER_SYSTEM_SESSION=1)
-    target_compile_definitions(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE LAUNCHER_SYSTEM_SESSION=1)
+target_compile_definitions(launcher_core PUBLIC
+    LAUNCHER_SYSTEM_SESSION=$<BOOL:${LAUNCHER_SYSTEM_SESSION}>)
+if(LAUNCHER_SYSTEM_SESSION)
     find_library(LAUNCHER_PAM_LIBRARY NAMES pam pam.so.0 libpam.so.0 REQUIRED)
-    find_library(LAUNCHER_ALSA_LIBRARY NAMES asound REQUIRED)
-    target_link_libraries(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE ${LAUNCHER_ALSA_LIBRARY})
     target_link_libraries(launcher_core PUBLIC ${LAUNCHER_PAM_LIBRARY})
 endif()
 target_link_libraries(${LILYGO_UI_EXECUTABLE_NAME} PRIVATE
-    launcher_core launcher_setup LilyGoUI::StatusBar LilyGoUI::UIFonts LilyGoUI::Input)
+    launcher_core launcher_setup LilyGoUI::StatusBar LilyGoUI::UIFonts LilyGoUI::Input LilyGoUI::Hardware)
 
 # Manual hardware harness is cross-buildable, but never runs automatically or
 # becomes part of a published application.
@@ -110,16 +119,14 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     add_executable(launcher-system-controls-tests tests/test_system_controls.cpp src/system_controls.cpp)
     target_include_directories(launcher-system-controls-tests PRIVATE src)
     target_compile_options(launcher-system-controls-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        find_library(LAUNCHER_TEST_ALSA_LIBRARY NAMES asound REQUIRED)
-        target_link_libraries(launcher-system-controls-tests PRIVATE ${LAUNCHER_TEST_ALSA_LIBRARY})
-    endif()
+    target_link_libraries(launcher-system-controls-tests PRIVATE LilyGoUI::Hardware)
     add_test(NAME launcher-system-controls COMMAND launcher-system-controls-tests)
 
     add_executable(launcher-simulator-controls-tests tests/test_system_controls.cpp src/system_controls.cpp)
     target_include_directories(launcher-simulator-controls-tests PRIVATE src)
     target_compile_definitions(launcher-simulator-controls-tests PRIVATE LAUNCHER_SIMULATOR=1)
     target_compile_options(launcher-simulator-controls-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(launcher-simulator-controls-tests PRIVATE LilyGoUI::Hardware)
     add_test(NAME launcher-simulator-controls COMMAND launcher-simulator-controls-tests)
 
     add_executable(launcher-manifest-tests tests/test_manifest.c src/manifest.cpp)
@@ -176,6 +183,13 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(launcher-session-tests PRIVATE launcher_logging)
     add_test(NAME launcher-session COMMAND launcher-session-tests)
 
+    add_executable(launcher-local-session-tests tests/test_local_session.cpp src/session.cpp)
+    target_include_directories(launcher-local-session-tests PRIVATE src)
+    target_compile_definitions(launcher-local-session-tests PRIVATE LAUNCHER_SYSTEM_SESSION=0)
+    target_compile_options(launcher-local-session-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(launcher-local-session-tests PRIVATE launcher_logging)
+    add_test(NAME launcher-local-session COMMAND launcher-local-session-tests)
+
     if(CM0_SIMULATOR)
         add_executable(launcher-simulator-session-tests
             tests/test_simulator_session.cpp src/session.cpp)
@@ -222,6 +236,9 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME launcher-setup-update-helper
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_update.sh"
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-first-boot-update")
+    add_test(NAME launcher-setup-region-helper
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_region_helper.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/lilygo-ui-launcher-setup-region")
 
     add_executable(launcher-keyboard-device-tests
         tests/test_keyboard_device.cpp src/keyboard_device.cpp)
@@ -275,12 +292,29 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.sh"
             "$<TARGET_FILE:${LILYGO_UI_EXECUTABLE_NAME}>")
 
+    find_program(LAUNCHER_TEST_PYTHON NAMES python3 REQUIRED)
+    add_test(NAME launcher-k230-integration
+        COMMAND "${LAUNCHER_TEST_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_k230_integration.py")
+    add_test(NAME launcher-k230-network
+        COMMAND "${LAUNCHER_TEST_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_k230_network.py")
+
 endif()
 
 install(TARGETS ${LILYGO_UI_EXECUTABLE_NAME}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT launcher)
+if(LILYGO_UI_TARGET_OS STREQUAL "buildroot")
+    install(PROGRAMS packaging/buildroot/S99lilygo-ui-launcher
+                     packaging/buildroot/S45lilygo-ui-network
+        DESTINATION /etc/init.d COMPONENT launcher)
+    install(PROGRAMS packaging/buildroot/k230-network.py
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/${LILYGO_UI_PACKAGE_NAME}
+        COMPONENT launcher)
+    install(FILES packaging/buildroot/launcher.conf
+        DESTINATION /etc/lilygo/ui COMPONENT launcher)
+else()
 install(FILES packaging/systemd/lilygo-ui-launcher.service
+              packaging/systemd/lilygo-ui-wifi-country.service
               packaging/systemd/lilygo-ui-launcher-update.service
               packaging/systemd/lilygo-ui-launcher-first-boot-update.service
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system
@@ -289,6 +323,7 @@ install(FILES packaging/systemd/userconfig.service.d/50-lilygo-ui-launcher.conf
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system/userconfig.service.d
         COMPONENT launcher)
 install(PROGRAMS packaging/systemd/lilygo-ui-launcher-console
+                 packaging/systemd/lilygo-ui-launcher-setup-region
                  packaging/systemd/lilygo-ui-launcher-first-boot
                  packaging/systemd/lilygo-ui-launcher-first-boot-update
                  packaging/systemd/lilygo-ui-launcher-update
@@ -297,10 +332,18 @@ install(PROGRAMS packaging/systemd/lilygo-ui-launcher-console
 install(FILES packaging/pam/lilygo-ui-launcher
         DESTINATION /etc/pam.d
         COMPONENT launcher)
+endif()
 lilygo_ui_install_font_licenses(
     "${CMAKE_INSTALL_DATAROOTDIR}/doc/${LILYGO_UI_PACKAGE_NAME}" launcher)
 
-set(CPACK_GENERATOR DEB)
+if(LILYGO_UI_TARGET_OS STREQUAL "buildroot")
+    # Stock Buildroot cannot install Debian packages.
+    set(CPACK_GENERATOR TGZ)
+    set(CPACK_PACKAGE_FILE_NAME "${LILYGO_UI_PACKAGE_NAME}-${LILYGO_UI_VERSION}-${LILYGO_UI_PLATFORM}-${CMAKE_SYSTEM_PROCESSOR}")
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+else()
+    set(CPACK_GENERATOR DEB)
+endif()
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 set(CPACK_SET_DESTDIR ON)
 set(CPACK_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
@@ -319,14 +362,13 @@ set(CPACK_PACKAGE_CONTACT "${LILYGO_UI_PACKAGE_CONTACT}")
 set(CPACK_PACKAGE_VENDOR "${LILYGO_UI_PACKAGE_VENDOR}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${LILYGO_UI_APP_SUMMARY}")
 set(CPACK_PACKAGE_HOMEPAGE_URL "${LILYGO_UI_APP_HOMEPAGE}")
-set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_COMPONENTS_ALL launcher)
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
 set(CPACK_DEBIAN_LAUNCHER_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_LAUNCHER_DESCRIPTION "${LILYGO_UI_APP_SUMMARY}")
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_DEPENDS
-    "libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, libpam0g, libpam-modules, libasound2t64 | libasound2, libglib2.0-0t64, libssl3t64, passwd, sudo, raspi-config, locales, tzdata, keyboard-configuration, xkb-data, network-manager, apt, util-linux, bluez, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION}), systemd, dpkg, coreutils")
+    "libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, libpam0g, libpam-runtime, libpam-modules, libpam-systemd, libasound2t64 | libasound2, libglib2.0-0t64, libssl3t64, passwd, sudo, locales, tzdata, keyboard-configuration, xkb-data, network-manager, iw, wireless-regdb, apt, util-linux, bluez, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION}), systemd, dpkg, coreutils")
 if(LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS)
     string(APPEND CPACK_DEBIAN_LAUNCHER_PACKAGE_DEPENDS
         ", ${LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS}")
@@ -342,8 +384,19 @@ set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONTROL_EXTRA
 set(CPACK_DEBIAN_LAUNCHER_PACKAGE_CONTROL_STRICT_PERMISSION ON)
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "required")
-if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+if(LILYGO_UI_DEBIAN_ARCHITECTURE)
     set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE
-        "${LILYGO_UI_PACKAGE_ARCHITECTURE}")
+        "${LILYGO_UI_DEBIAN_ARCHITECTURE}")
+elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE arm64)
+endif()
+if("DEB" IN_LIST CPACK_GENERATOR AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT COMMAND lilygo_ui_enable_debian_dependencies)
+        message(FATAL_ERROR
+            "Debian packaging requires an AppKit SDK with automatic runtime dependency analysis. "
+            "Update the pinned AppKit or select a compatible SDK with "
+            "-DLilyGoUI_DIR=/path/to/cm0-appkit.")
+    endif()
+    lilygo_ui_enable_debian_dependencies()
 endif()
 include(CPack)

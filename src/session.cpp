@@ -383,6 +383,22 @@ bool read_pending(const std::string &path, uid_t &uid, std::string &original, bo
     return true;
 }
 
+bool read_new_user(const std::string &path, std::string &username, std::string &error)
+{
+    struct stat metadata{};
+    bool exists = false;
+    if (!read_owned_file(path, username, metadata, exists, error)) return false;
+    if (!exists) return true;
+    std::string parent;
+    if (!username.empty() && username.back() == '\n') username.pop_back();
+    if (geteuid() != 0 || !secure_state_parent(path, parent) ||
+        (metadata.st_mode & 07777) != 0600 || !valid_username(username)) {
+        set_error(error, "unsafe new-account recovery state");
+        return false;
+    }
+    return true;
+}
+
 bool write_owned_file(const std::string &path, const std::string &contents,
                       const struct stat &metadata, std::string &error)
 {
@@ -654,7 +670,7 @@ bool create_account(const std::string &username, const std::string &password, st
         return false;
     }
     std::string supplementary_groups = "sudo";
-    for (const char *group_name : {"video", "render", "input"}) {
+    for (const char *group_name : {"video", "render", "input", "audio", "dialout", "netdev", "i2c", "spi", "gpio"}) {
         if (!getgrnam(group_name)) continue;
         supplementary_groups.push_back(',');
         supplementary_groups += group_name;
@@ -689,6 +705,7 @@ struct UserSession::Impl {
     std::string selected_user;
     std::string setup_user;
     std::string original_user;
+    std::string new_user;
     uid_t setup_uid = 0;
     bool pending_setup = false;
     bool needs_setup = false;
@@ -728,6 +745,15 @@ bool UserSession::setup_required() const { return impl_ && impl_->needs_setup; }
 bool UserSession::setup_account_saved() const { return impl_ && impl_->marker_exists; }
 const std::string &UserSession::setup_username() const { return impl_->setup_user; }
 
+bool UserSession::local_session() const
+{
+#if defined(LAUNCHER_SYSTEM_SESSION) && !LAUNCHER_SYSTEM_SESSION && !defined(LAUNCHER_SIMULATOR)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool UserSession::initialize(std::string &error)
 {
     error.clear();
@@ -738,18 +764,45 @@ bool UserSession::initialize(std::string &error)
     impl_->pending_setup = false;
     impl_->setup_user.clear();
     impl_->original_user.clear();
+    impl_->new_user.clear();
 #if (!defined(LAUNCHER_SYSTEM_SESSION) || !LAUNCHER_SYSTEM_SESSION) && defined(LAUNCHER_SIMULATOR) && LAUNCHER_SIMULATOR
     // The simulator identity belongs only to this process. Never read or write
     // device account state or look up a matching host operating-system account.
     impl_->marker_user = kSimulatorUsername;
     clear_secret(impl_->simulator_password);
+#elif defined(LAUNCHER_SYSTEM_SESSION) && !LAUNCHER_SYSTEM_SESSION
+    // A Buildroot appliance has no PAM or account provisioning workflow. It
+    // runs under the account chosen by init/login and never changes identity.
+    // Refuse set-ID execution rather than inheriting elevated credentials.
+    if (getuid() != geteuid() || getgid() != getegid()) {
+        set_error(error, "local sessions cannot run with set-ID credentials");
+        return false;
+    }
+    const passwd *entry = getpwuid(geteuid());
+    if (!entry || !entry->pw_name || !entry->pw_name[0] ||
+        std::strlen(entry->pw_name) >= LAUNCHER_USER_NAME_MAX) {
+        set_error(error, "current process account is unavailable");
+        return false;
+    }
+    impl_->selected_user = entry->pw_name;
+    impl_->marker_user = impl_->selected_user;
 #else
     if (!read_marker(impl_->state_path, impl_->marker_user, error)) return false;
     impl_->marker_exists = !impl_->marker_user.empty();
 #if defined(LAUNCHER_SYSTEM_SESSION) && LAUNCHER_SYSTEM_SESSION
     const std::string pending = parent_path(impl_->state_path) + "/first-boot-pending";
     if (!read_pending(pending, impl_->setup_uid, impl_->original_user, impl_->pending_setup, error)) return false;
-    if (impl_->pending_setup) {
+    if (!read_new_user(parent_path(impl_->state_path) + "/first-boot-new-user", impl_->new_user, error)) return false;
+    if (!impl_->new_user.empty()) {
+        if (impl_->pending_setup || (impl_->marker_exists && impl_->marker_user != impl_->new_user)) {
+            set_error(error, "conflicting first-boot account state");
+            return false;
+        }
+        // The journal predates useradd: a power failure before chpasswd/PAM
+        // must not turn the newly created locked user into a normal login.
+        impl_->setup_user = impl_->new_user;
+        impl_->needs_setup = true;
+    } else if (impl_->pending_setup) {
         const passwd *source = getpwuid(impl_->setup_uid);
         if (!source || !source->pw_name || !valid_username(source->pw_name) || source->pw_gid == 0) {
             set_error(error, "first-boot source account is unavailable or unsafe");
@@ -827,12 +880,36 @@ bool UserSession::login(const std::string &username, const std::string &password
         }
         impl_->setup_user = username;
     } else if (create) {
-        if (getpwnam(username.c_str())) {
-            set_error(error, "account already exists");
+        const auto journal = parent_path(impl_->state_path) + "/first-boot-new-user";
+        if (!impl_->new_user.empty() && username != impl_->new_user) {
+            set_error(error, "finish setup with the account already selected");
             return false;
         }
-        if (!create_account(username, password, error)) return false;
-        created = true;
+        const passwd *existing = getpwnam(username.c_str());
+        if (impl_->new_user.empty()) {
+            if (existing) {
+                set_error(error, "account already exists");
+                return false;
+            }
+            // Commit creation intent before mutating passwd/shadow. No
+            // password is written here; the user re-enters it after restart.
+            if (!write_marker_atomic(journal, username, error)) return false;
+            impl_->new_user = username;
+            impl_->setup_user = username;
+        }
+        if (existing) {
+            if (existing->pw_uid < 1000 || existing->pw_uid == 65534 ||
+                !fill_user(existing, impl_->account, error)) {
+                set_error(error, "new-account recovery found an unsafe account");
+                return false;
+            }
+            // After active-user is committed, retries must authenticate the
+            // saved password instead of permitting an unauthenticated reset.
+            if (!impl_->marker_exists && !set_account_password(username, password, error)) return false;
+        } else {
+            if (!create_account(username, password, error)) return false;
+            created = true;
+        }
     }
     struct passwd *entry = getpwnam(username.c_str());
     if (!entry || (impl_->pending_setup && entry->pw_uid != impl_->setup_uid)) {
@@ -932,6 +1009,22 @@ bool UserSession::complete_setup(std::string &error)
     if (impl_->pending_setup && !account_helper({kFirstBootHelper, "complete"}, error)) {
         set_error(error, "first-boot cleanup failed; retry finishing setup");
         return false;
+    }
+    if (!impl_->new_user.empty()) {
+        const auto directory = parent_path(impl_->state_path);
+        const auto journal = directory + "/first-boot-new-user";
+        if (unlink(journal.c_str()) != 0 && errno != ENOENT) {
+            set_error(error, "cannot retire new-account recovery state");
+            return false;
+        }
+        const int fd = open(directory.c_str(), O_RDONLY | O_CLOEXEC);
+        const bool durable = fd >= 0 && fsync(fd) == 0;
+        if (fd >= 0) close(fd);
+        if (!durable) {
+            set_error(error, "cannot commit new-account setup completion");
+            return false;
+        }
+        impl_->new_user.clear();
     }
 #elif !defined(LAUNCHER_SIMULATOR) || !LAUNCHER_SIMULATOR
     set_error(error, "user sessions are unavailable in this build");

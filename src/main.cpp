@@ -12,6 +12,7 @@
 #include "first_boot_wizard.h"
 
 #include <lvgl.h>
+#include <cm0/platform.h>
 #include <cm0/typography.h>
 
 #include <errno.h>
@@ -214,30 +215,37 @@ static void discover_apps(launcher_registry_t *registry, const char *extra_direc
     launcher_registry_sort(registry);
 }
 
-static bool prepare_file_share_directory(const launcher::UserSession &session, std::string &path, std::string &error)
+static bool prepare_file_share_directory(const launcher::UserSession &session, launcher_user_t &owner,
+                                         std::string &path, std::string &error)
 {
     path.clear();
     const launcher_user_t *user = session.user();
-    launcher_user_t simulator_user{};
+    launcher_user_t local_user{};
     if (!user) {
-        /* Host sessions intentionally do not change process credentials. Use
-         * the simulator's current HOME while keeping the same path and
+        if (session.local_session() && (getuid() == 0 || getgid() == 0)) {
+            error = "File sharing requires a non-root local account.";
+            return false;
+        }
+        /* Local and simulator sessions do not change process credentials. Use
+         * the inherited HOME while keeping the same path and
          * ownership checks as a device session. */
         const char *home = getenv("HOME");
         if (!home || home[0] != '/') {
-            error = "HOME is unavailable for the simulator file-share directory";
+            error = "HOME is unavailable for the local file-share directory";
             return false;
         }
-        simulator_user.uid = getuid();
-        simulator_user.gid = getgid();
+        local_user.uid = getuid();
+        local_user.gid = getgid();
         const char *name = getenv("USER");
-        snprintf(simulator_user.name, sizeof(simulator_user.name), "%s", name && name[0] ? name : "simulator");
-        snprintf(simulator_user.home, sizeof(simulator_user.home), "%s", home);
-        snprintf(simulator_user.shell, sizeof(simulator_user.shell), "/bin/sh");
-        snprintf(simulator_user.runtime_dir, sizeof(simulator_user.runtime_dir), "/tmp");
-        user = &simulator_user;
+        snprintf(local_user.name, sizeof(local_user.name), "%s", name && name[0] ? name : "local");
+        snprintf(local_user.home, sizeof(local_user.home), "%s", home);
+        snprintf(local_user.shell, sizeof(local_user.shell), "/bin/sh");
+        snprintf(local_user.runtime_dir, sizeof(local_user.runtime_dir), "/tmp");
+        user = &local_user;
     }
-    return launcher::file_share::resolve_download_directory(user, path, error);
+    if (!launcher::file_share::resolve_download_directory(user, path, error)) return false;
+    owner = *user;
+    return true;
 }
 
 static void usage(const char *program)
@@ -260,17 +268,19 @@ int main(int argc, char **argv)
 #if defined(LAUNCHER_SIMULATOR)
     const char *backend = "sdl";
 #else
-    const char *backend = "drm";
+    const char *backend = LILYGO_UI_DEFAULT_DISPLAY_BACKEND;
 #endif
-    const char *fbdev_path                     = "/dev/fb0";
-    const char *drm_path                       = "/dev/dri/card0";
+    const char *fbdev_path                     = LILYGO_UI_DEFAULT_FBDEV_PATH;
+    const char *drm_path                       = LILYGO_UI_DEFAULT_DRM_PATH;
     int64_t drm_connector_id                   = -1;
-    const char *input_path                     = "/dev/input/by-path/platform-3f205000.i2c-event";
+    const char *input_path                     = LILYGO_UI_DEFAULT_INPUT_PATH;
     const char *power_input_path               = nullptr;
     const char *app_directory                  = NULL;
-    launcher_orientation_t current_orientation = LAUNCHER_ORIENTATION_PORTRAIT;
+    launcher_orientation_t current_orientation =
+        strcmp(LILYGO_UI_DEFAULT_ORIENTATION, "landscape") == 0
+            ? LAUNCHER_ORIENTATION_LANDSCAPE : LAUNCHER_ORIENTATION_PORTRAIT;
     bool setup_demo = false;
-    int width = LAUNCHER_DEFAULT_WIDTH, height = LAUNCHER_DEFAULT_HEIGHT;
+    int width = LILYGO_UI_DEFAULT_WIDTH, height = LILYGO_UI_DEFAULT_HEIGHT;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--display") == 0 && i + 1 < argc)
             backend = argv[++i];
@@ -355,14 +365,14 @@ int main(int argc, char **argv)
     bool authenticated = false;
     bool screen_locked = false;
     launcher::FirstBootWizard setup_wizard(user_session);
-    if (!setup_wizard.initialize(setup_demo, session_error)) {
+    if (!user_session.local_session() && !setup_wizard.initialize(setup_demo, session_error)) {
         launcher::logging::error("cannot initialize first-boot setup: %s", session_error.c_str());
         return 1;
     }
     setup_wizard.set_hardware_keyboard_present(display.tca8418_present());
-    launcher_account_view_t *account_view = setup_wizard.active() ? nullptr
+    launcher_account_view_t *account_view = (setup_wizard.active() || user_session.local_session()) ? nullptr
         : launcher_account_view_create(user_session.setup_available(), user_session.last_user().c_str(), false);
-    if (!setup_wizard.active() && !account_view) {
+    if (!setup_wizard.active() && !user_session.local_session() && !account_view) {
         launcher::logging::error("cannot create account screen");
         return 1;
     }
@@ -387,21 +397,30 @@ int main(int argc, char **argv)
     uint32_t next_controls_scan = tick_ms() + 2000U;
     uint32_t next_level_write = 0;
     bool file_share_open = false;
+    std::optional<launcher_user_t> file_share_owner;
+    std::string file_share_unavailable_reason;
     std::optional<std::uint64_t> displayed_file_share_approval;
     std::string file_share_status;
     const auto enter_home = [&]() {
         authenticated = true;
         process_options.user = user_session.user();
         launcher_ui_set_session_user(display.ui(), user_session.username().c_str());
+        launcher_ui_set_account_actions_enabled(display.ui(), !user_session.local_session());
         std::string file_share_path;
         std::string file_share_error;
-        if (!prepare_file_share_directory(user_session, file_share_path, file_share_error)) {
+        launcher_user_t share_owner{};
+        file_share_owner.reset();
+        if (!prepare_file_share_directory(user_session, share_owner, file_share_path, file_share_error)) {
             launcher::logging::warn("file sharing is unavailable: %s", file_share_error.c_str());
+            file_share_unavailable_reason = file_share_error;
             launcher_ui_set_file_share_directory(display.ui(), nullptr);
+            launcher_ui_set_file_share_status(display.ui(), file_share_error.c_str());
         } else {
+            file_share_owner = share_owner;
+            file_share_unavailable_reason.clear();
             launcher_ui_set_file_share_directory(display.ui(), file_share_path.c_str());
+            launcher_ui_set_file_share_status(display.ui(), "Open file sharing to connect from your browser.");
         }
-        launcher_ui_set_file_share_status(display.ui(), "Open file sharing to connect from your browser.");
         launcher_account_view_destroy(account_view);
         account_view = nullptr;
         launcher_ui_set_input_enabled(display.ui(), true);
@@ -415,6 +434,11 @@ int main(int argc, char **argv)
         screen_locked = false;
         display.refresh();
     };
+    if (user_session.local_session()) {
+        launcher::logging::info("using local session for %s (uid=%lu)", user_session.username().c_str(),
+                                static_cast<unsigned long>(getuid()));
+        enter_home();
+    }
     while (!stop_requested && display.alive()) {
         uint32_t delay = lv_timer_handler();
         if (!display.alive()) break;
@@ -491,10 +515,11 @@ int main(int argc, char **argv)
             launcher_account_view_set_hardware_keyboard_present(account_view, display.tca8418_present());
             display.refresh();
         }
-        const bool sharing_requested = authenticated && launcher_ui_file_share_open(display.ui());
+        const bool sharing_requested = authenticated && file_share_owner.has_value() &&
+                                       launcher_ui_file_share_open(display.ui());
         if (sharing_requested && !file_share_open) {
             std::string sharing_error;
-            if (!file_share_receiver.start(user_session.user(), sharing_error))
+            if (!file_share_receiver.start(file_share_owner ? &*file_share_owner : nullptr, sharing_error))
                 launcher::logging::warn("file sharing is unavailable: %s", sharing_error.c_str());
             file_share_status.clear();
         } else if (!sharing_requested && file_share_open) {
@@ -592,6 +617,9 @@ int main(int argc, char **argv)
             system_controls.refresh();
             sync_system_controls();
             launcher_ui_set_session_user(display.ui(), user_session.username().c_str());
+            launcher_ui_set_account_actions_enabled(display.ui(), !user_session.local_session());
+            if (!file_share_unavailable_reason.empty())
+                launcher_ui_set_file_share_status(display.ui(), file_share_unavailable_reason.c_str());
             power_button.open(power_input_path);
             launcher::logging::info("switch restored app_id=%s restore_ms=%u retained=%d", requested_app->manifest.id,
                                     tick_ms() - restore_started, display.retained());

@@ -291,7 +291,8 @@ void test_account_creation()
     const std::string helper_log = test_home + "/helper-calls";
     for (const auto &groups : {std::vector<std::string>{"sudo", "video", "render", "input"},
                               std::vector<std::string>{"sudo"},
-                              std::vector<std::string>{"sudo", "input"}}) {
+                              std::vector<std::string>{"sudo", "input"},
+                              std::vector<std::string>{"sudo", "video", "render", "input", "audio", "dialout", "netdev", "i2c", "spi", "gpio"}}) {
         available_groups = groups;
         helper_accesses = 0;
         std::string error;
@@ -400,7 +401,7 @@ void reset_fixture(const std::string &name = "pi", bool pending = true)
     for (const char *directory : {"/home", "/etc"}) {
         std::filesystem::remove_all(test_home + directory);
     }
-    for (const char *file : {"/account", "/active-user", "/first-boot-pending", "/helper-calls"})
+    for (const char *file : {"/account", "/active-user", "/first-boot-pending", "/first-boot-new-user", "/helper-calls"})
         std::filesystem::remove_all(test_home + file);
     std::filesystem::create_directories(test_home + "/home");
     std::filesystem::create_directories(test_home + "/etc/sudoers.d");
@@ -708,6 +709,38 @@ void test_fresh_creation_rollback()
         assert(session.user()->uid == 1000 && !session.setup_required());
     }
 }
+
+void test_fresh_creation_recovers_after_restart()
+{
+    for (bool account_exists : {false, true}) {
+        reset_fixture(account_exists ? "newuser" : "", false);
+        write_text(test_home + "/first-boot-new-user", "newuser\n");
+        std::string error;
+        {
+            launcher::UserSession resumed(test_home + "/active-user", test_home);
+            assert(resumed.initialize(error) && resumed.setup_required() && resumed.setup_available());
+            assert(resumed.setup_username() == "newuser");
+            assert(!resumed.login("someone_else", "correct-password", true, error));
+            assert(!resumed.login("newuser", "correct-password", false, error));
+            assert(resumed.login("newuser", "correct-password", true, error, false));
+            assert(resumed.setup_account_saved());
+            assert(access((test_home + "/first-boot-new-user").c_str(), F_OK) == 0);
+        }
+        const auto committed_calls = read_text(test_home + "/helper-calls");
+        launcher::UserSession committed(test_home + "/active-user", test_home);
+        assert(committed.initialize(error) && committed.setup_required());
+        assert(!committed.login("newuser", "wrong-password", true, error));
+        assert(read_text(test_home + "/helper-calls") == committed_calls);
+        assert(committed.login("newuser", "correct-password", false, error, false));
+        assert(committed.complete_setup(error));
+        assert(access((test_home + "/first-boot-new-user").c_str(), F_OK) != 0);
+    }
+    reset_fixture("newuser", false);
+    write_text(test_home + "/first-boot-new-user", "newuser\n", 0644);
+    std::string error;
+    launcher::UserSession unsafe(test_home + "/active-user", test_home);
+    assert(!unsafe.initialize(error));
+}
 } // namespace
 
 int main()
@@ -780,6 +813,7 @@ int main()
     test_full_wizard_defers_cleanup_and_resumes_authenticated_account();
     test_pending_state_validation();
     test_fresh_creation_rollback();
+    test_fresh_creation_recovers_after_restart();
     std::filesystem::remove_all(test_home);
     return 0;
 }

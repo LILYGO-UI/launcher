@@ -95,6 +95,7 @@ case "${1:-}" in
             fi
 
             systemctl set-default multi-user.target || true
+            systemctl enable lilygo-ui-wifi-country.service || true
             systemctl enable lilygo-ui-launcher.service || true
             if [ -d "$systemd_runtime_dir" ] &&
                [ "${LILYGO_UI_LAUNCHER_UPDATE_HELPER:-0}" != 1 ]; then

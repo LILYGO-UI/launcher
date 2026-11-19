@@ -4,7 +4,7 @@ set -eu
 # Destructive fixture setup is intentionally limited to a fresh Docker
 # container. Run with --rm --network none and bind the repository read-only.
 # Arguments: compiled Linux driver, repository,
-# rename|keep|resume|resume-home|cleanup|disabled|full.
+# rename|keep|resume|resume-home|cleanup|disabled|full|new|new-resume.
 [ "${LILYGO_FIRST_BOOT_DISPOSABLE_TEST:-}" = 1 ] && [ -f /.dockerenv ] &&
     [ "$(id -u)" = 0 ] || { echo "A disposable Docker root fixture is required" >&2; exit 1; }
 driver=$1
@@ -35,9 +35,38 @@ EOF
 chmod 0755 /fixture-bin/systemctl
 PATH=/fixture-bin:$PATH
 export PATH
-for group in sudo adm video input render i2c gpio fixture-access; do
+for group in sudo adm video input render audio dialout netdev i2c spi gpio fixture-access; do
     getent group "$group" >/dev/null || groupadd "$group"
 done
+if [ "$scenario" = new ] || [ "$scenario" = new-resume ]; then
+    helper=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-first-boot
+    "$helper" prepare
+    [ ! -e /var/lib/lilygo-ui-launcher/first-boot-pending ]
+    if [ "$scenario" = new-resume ]; then
+        # Power loss after useradd has committed passwd but before chpasswd.
+        printf 'wing\n' > /var/lib/lilygo-ui-launcher/first-boot-new-user
+        chmod 0600 /var/lib/lilygo-ui-launcher/first-boot-new-user
+        useradd --uid 1000 --create-home --shell /bin/bash \
+            --groups sudo,video,render,input,audio,dialout,netdev,i2c,spi,gpio wing
+        [ "$(getent shadow wing | cut -d: -f2)" = '!' ]
+    fi
+    "$driver" new_begin wing
+    "$helper" prepare
+    "$driver" new_finish wing
+    [ ! -e /var/lib/lilygo-ui-launcher/first-boot-new-user ]
+    [ ! -e /var/lib/lilygo-ui-launcher/first-boot-progress ]
+    [ "$(cat /var/lib/lilygo-ui-launcher/active-user)" = wing ]
+    for group in sudo video render input audio dialout netdev i2c spi gpio; do
+        id -nG wing | tr ' ' '\n' | grep -qx "$group"
+    done
+    "$driver" restart wing
+    if command -v sudo >/dev/null 2>&1; then
+        [ "$(printf '%s\n' fixture-first-boot-password | runuser -u wing -- sudo -k -S -p '' id -u)" = 0 ]
+        echo 'PASS: real sudo password-authenticated group policy'
+    fi
+    echo "PASS: $scenario creates a Debian owner, resumes full setup and verifies PAM"
+    exit 0
+fi
 source_shell=/usr/sbin/nologin
 [ "$scenario" != disabled ] || source_shell=/bin/bash
 useradd --uid 1000 --create-home --shell "$source_shell" \

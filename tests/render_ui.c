@@ -29,6 +29,16 @@ static lv_color32_t *status_snapshot;
 static lv_point_t pointer_point;
 static lv_indev_state_t pointer_state = LV_INDEV_STATE_RELEASED;
 
+static lv_color32_t rgb565_pixel(uint16_t packed)
+{
+    lv_color32_t result = {0};
+    result.red = (uint8_t)((((packed >> 11) & 31U) * 255U + 15U) / 31U);
+    result.green = (uint8_t)((((packed >> 5) & 63U) * 255U + 31U) / 63U);
+    result.blue = (uint8_t)(((packed & 31U) * 255U + 15U) / 31U);
+    result.alpha = 255;
+    return result;
+}
+
 static void read_pointer(lv_indev_t *input, lv_indev_data_t *data)
 {
     (void)input;
@@ -40,10 +50,22 @@ static void flush_display(lv_display_t *display, const lv_area_t *area, uint8_t 
 {
     int width                  = area->x2 - area->x1 + 1;
     int display_width          = lv_display_get_horizontal_resolution(display);
-    const lv_color32_t *source = (const lv_color32_t *)pixels;
+    const lv_color_format_t format = lv_display_get_color_format(display);
+    const uint32_t stride = lv_draw_buf_width_to_stride(width, format);
+    assert(format == LV_COLOR_FORMAT_RGB565 || format == LV_COLOR_FORMAT_XRGB8888 ||
+           format == LV_COLOR_FORMAT_ARGB8888);
     for (int y = area->y1; y <= area->y2; ++y) {
-        memcpy(framebuffer + (size_t)y * display_width + area->x1, source + (size_t)(y - area->y1) * width,
-               (size_t)width * sizeof(*source));
+        const uint8_t *source = pixels + (size_t)(y - area->y1) * stride;
+        lv_color32_t *destination = framebuffer + (size_t)y * display_width + area->x1;
+        if (format == LV_COLOR_FORMAT_RGB565) {
+            for (int x = 0; x < width; ++x) {
+                uint16_t packed;
+                memcpy(&packed, source + (size_t)x * 2, sizeof(packed));
+                destination[x] = rgb565_pixel(packed);
+            }
+        } else {
+            memcpy(destination, source, (size_t)width * sizeof(*destination));
+        }
     }
     lv_display_flush_ready(display);
 }
@@ -366,20 +388,22 @@ static void assert_focused_outline_visible(lv_display_t *display, lv_obj_t *cont
     const int32_t display_height = lv_display_get_vertical_resolution(display);
     const lv_color_t outline_color = lv_obj_get_style_outline_color(control, LV_PART_MAIN);
     assert(lv_color_eq(outline_color, lv_color_hex(COLOR_CONTROL_FOCUS)));
+    const lv_color32_t expected = lv_display_get_color_format(display) == LV_COLOR_FORMAT_RGB565
+        ? rgb565_pixel(lv_color_to_u16(outline_color)) : lv_color_to_32(outline_color, LV_OPA_COVER);
     static const char *edge_names[] = {"left", "right", "top", "bottom"};
     for (size_t i = 0; i < 4; ++i) {
         assert(samples[i].x >= 0 && samples[i].x < display_width);
         assert(samples[i].y >= 0 && samples[i].y < display_height);
         const lv_color32_t pixel = framebuffer[(size_t)samples[i].y * display_width + samples[i].x];
-        const bool matches = pixel.red == outline_color.red && pixel.green == outline_color.green &&
-                             pixel.blue == outline_color.blue;
+        const bool matches = pixel.red == expected.red && pixel.green == expected.green &&
+                             pixel.blue == expected.blue;
         if (!matches)
             fprintf(stderr,
                     "quick-control focus outline missing: display=%dx%d control=%s edge=%s "
                     "sample=(%d,%d) rgb=(%u,%u,%u) expected=(%u,%u,%u) opacity=%u\n",
                     display_width, display_height, lv_obj_get_name(control), edge_names[i],
                     samples[i].x, samples[i].y, pixel.red, pixel.green, pixel.blue,
-                    outline_color.red, outline_color.green, outline_color.blue,
+                    expected.red, expected.green, expected.blue,
                     lv_obj_get_style_outline_opa(control, LV_PART_MAIN));
         assert(matches);
     }
@@ -1373,6 +1397,19 @@ int main(int argc, char **argv)
     assert(!launcher_ui_take_launch_request(ui));
     assert(!launcher_ui_take_lock_request(ui));
     launcher_ui_set_input_enabled(ui, true);
+    // A local embedded session keeps sharing available without advertising
+    // account operations that require PAM. Hidden controls also ignore events.
+    launcher_ui_set_account_actions_enabled(ui, false);
+    assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "lock_button"), LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "session_button"), LV_OBJ_FLAG_HIDDEN));
+    assert(!lv_obj_has_flag(lv_obj_find_by_name(screen, "file_share_button"), LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(lv_obj_find_by_name(screen, "session_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(!launcher_ui_take_lock_request(ui) && !launcher_ui_take_logout_request(ui));
+    launcher_ui_set_session_user(ui, "local-user");
+    assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "lock_button"), LV_OBJ_FLAG_HIDDEN));
+    launcher_ui_set_account_actions_enabled(ui, true);
+    assert(!lv_obj_has_flag(lv_obj_find_by_name(screen, "lock_button"), LV_OBJ_FLAG_HIDDEN));
     launcher_ui_set_session_user(ui, NULL);
     assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "lock_button"), LV_OBJ_FLAG_HIDDEN));
     assert(lv_obj_has_flag(lv_obj_find_by_name(screen, "session_button"), LV_OBJ_FLAG_HIDDEN));

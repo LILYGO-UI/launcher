@@ -1,7 +1,8 @@
 [Unit]
 Description=LILYGO UI Launcher
-After=systemd-udev-settle.service network-online.target time-sync.target
-Wants=network-online.target time-sync.target
+After=systemd-udev-settle.service NetworkManager.service systemd-logind.service
+Wants=NetworkManager.service systemd-logind.service
+# The setup screen configures networking, so it must also start offline.
 Wants=systemd-udev-settle.service
 Conflicts=getty@tty1.service display-manager.service cm0-launcher.service
 # Its drop-in skips the text wizard while Launcher is installed. Preserve the
@@ -15,7 +16,7 @@ Group=root
 RuntimeDirectory=lilygo-ui-launcher
 ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-console acquire
 ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-first-boot prepare
-ExecStart=/usr/bin/lilygo-ui-launcher --display drm --drm /dev/dri/card0 --input /dev/input/by-path/platform-3f205000.i2c-event
+ExecStart=/usr/bin/lilygo-ui-launcher --display drm --drm /dev/dri/card0 --input auto --orientation portrait
 ExecStopPost=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-console release
 Restart=on-failure
 RestartSec=2

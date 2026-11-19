@@ -32,6 +32,8 @@ void launcher_ui_refresh_home(launcher_ui_t *ui);
 void launcher_ui_apply_orientation(launcher_ui_t *ui, launcher_orientation_t orientation);
 /* Update the quick panel account actions. Passing NULL hides lock and sign out. */
 void launcher_ui_set_session_user(launcher_ui_t *ui, const char *name);
+/* Local appliance sessions retain file sharing but have no account service. */
+void launcher_ui_set_account_actions_enabled(launcher_ui_t *ui, bool enabled);
 bool launcher_ui_take_lock_request(launcher_ui_t *ui);
 bool launcher_ui_take_logout_request(launcher_ui_t *ui);
 void launcher_ui_set_file_share_directory(launcher_ui_t *ui, const char *path);

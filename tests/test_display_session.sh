@@ -6,9 +6,10 @@ test_build=$(mktemp -d "${TMPDIR:-/tmp}/lilygo-display-session.XXXXXX")
 trap 'rm -rf "$test_build"' EXIT HUP INT TERM
 test_cxx=${1:-${CXX:-c++}}
 
-for backend in software egl egl-legacy; do
+for backend in software software-drm-only egl egl-legacy; do
     case "$backend" in
         software) set -- -DLV_LINUX_DRM_USE_EGL=0 ;;
+        software-drm-only) set -- -DLV_LINUX_DRM_USE_EGL=0 -DLV_USE_LINUX_FBDEV=0 ;;
         egl) set -- -DLV_LINUX_DRM_USE_EGL=1 -DLILYGO_UI_HAS_DRM_HANDOFF=1 ;;
         egl-legacy) set -- -DLV_LINUX_DRM_USE_EGL=1 ;;
     esac

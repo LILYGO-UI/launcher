@@ -14,8 +14,8 @@ assert_unit_value() {
     fi
 }
 
-assert_unit_value After "systemd-udev-settle.service network-online.target time-sync.target"
-assert_unit_value Wants "network-online.target time-sync.target"
+assert_unit_value After "systemd-udev-settle.service NetworkManager.service systemd-logind.service"
+assert_unit_value Wants "NetworkManager.service systemd-logind.service"
 assert_unit_value User "root"
 assert_unit_value Group "root"
 assert_unit_value Before "userconfig.service"
@@ -25,6 +25,7 @@ if grep -F 'Conflicts=userconfig.service' "$unit" >/dev/null; then
 fi
 grep -Fx 'ConditionPathExists=!/usr/bin/lilygo-ui-launcher' "$dropin" >/dev/null
 grep -F 'ExecStart=/usr/bin/lilygo-ui-launcher' "$unit" >/dev/null
+assert_unit_value ExecStart "/usr/bin/lilygo-ui-launcher --display drm --drm /dev/dri/card0 --input auto --orientation portrait"
 grep -F 'ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-console acquire' "$unit" >/dev/null
 grep -Fx 'ExecStartPre=/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-first-boot prepare' "$unit" >/dev/null
 if grep -Eq '^[[:space:]]*NoNewPrivileges=yes([[:space:]]|$)' "$unit"; then

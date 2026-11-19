@@ -339,25 +339,31 @@ bool apply_setup_region(const SetupRegion &region, const SetupCatalog &catalog,
 
     const struct Operation {
         const char *function;
+        const char *debian_function;
         const char *name;
         const std::string *value;
         std::string (*read)(const std::string &);
     } operations[] = {
-        {"do_wifi_country", "country", &region.country, read_country},
-        {"do_change_locale", "language", &region.locale, read_locale},
-        {"do_change_timezone", "time zone", &region.timezone, read_timezone},
-        {"do_configure_keyboard", "keyboard layout", &region.keyboard, read_keyboard},
+        {"do_wifi_country", "country", "country", &region.country, read_country},
+        {"do_change_locale", "locale", "language", &region.locale, read_locale},
+        {"do_change_timezone", "timezone", "time zone", &region.timezone, read_timezone},
+        {"do_configure_keyboard", "keyboard", "keyboard layout", &region.keyboard, read_keyboard},
     };
+    std::error_code filesystem_error;
+    const bool raspberry_pi = std::filesystem::is_regular_file(path_at(root, "/usr/bin/raspi-config"), filesystem_error);
     for (const auto &operation : operations) {
-        if (std::string(operation.function) == "do_configure_keyboard" &&
+        if (raspberry_pi && std::string(operation.function) == "do_configure_keyboard" &&
             !assignment(path_at(root, "/etc/default/keyboard"), "XKBVARIANT").empty()) {
             // The UI chooses base layouts. A variant belonging to the previous
             // layout must not survive and invalidate the new XKB keymap.
             if (!run_region_helper(runner, {"/usr/bin/sed", "-i", "s/^XKBVARIANT=.*/XKBVARIANT=\"\"/", "/etc/default/keyboard"},
                                    "keyboard variant", error)) return false;
         }
-        if (!run_region_helper(runner, {"/usr/bin/raspi-config", "nonint", operation.function, *operation.value}, operation.name, error)) return false;
-        if (std::string(operation.function) == "do_change_locale") {
+        const std::vector<std::string> arguments = raspberry_pi
+            ? std::vector<std::string>{"/usr/bin/raspi-config", "nonint", operation.function, *operation.value}
+            : std::vector<std::string>{"/usr/lib/lilygo-ui-launcher/lilygo-ui-launcher-setup-region", operation.debian_function, *operation.value};
+        if (!run_region_helper(runner, arguments, operation.name, error)) return false;
+        if (raspberry_pi && std::string(operation.function) == "do_change_locale") {
             // Existing LANGUAGE or LC_* values would override the selected
             // language. First-use setup establishes one consistent new default.
             if (!run_region_helper(runner, {"/usr/sbin/update-locale", "--reset", "LANG=" + region.locale},

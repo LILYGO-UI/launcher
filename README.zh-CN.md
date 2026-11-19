@@ -478,3 +478,15 @@ lpm deploy
 冷启动时，即使设备节点和 connector 已就绪，其他启动阶段的客户端仍可能短暂持有
 DRM master。设备 DRM 后端在初始化 KMS 前最多等待十秒以获取 master；首次 atomic
 modeset 在提交成功前保持可重试，DRM 告警与错误会转发到服务日志。
+
+### 使用 LPM 构建 K230 Debian riscv64
+
+Linux 主机安装 `gcc-riscv64-linux-gnu` 和 `g++-riscv64-linux-gnu`，macOS 主机用 `brew install llvm lld dpkg` 安装交叉编译和打包工具。在应用仓库根目录运行打包命令。
+
+```sh
+lpm pack --arch riscv64
+```
+
+`k230-debian` CMake 预设首次配置时从 `LILYGO-UI/canaan-gen` Release 下载固定版本的 Debian BSP，校验 SHA-256，并将压缩包和 `sysroot/` 保存在当前项目的 `.cache/k230-bsp/20261116T104343Z/`。之后可以离线打包，重新生成 `build/` 也会复用缓存。生成的 `.deb` 在 `dist/` 目录。
+
+执行一次 `lpm set-target k230` 后，后续直接运行 `lpm pack`。如需自定义 Debian sysroot，在首次配置前设置 `LILYGO_UI_DEBIAN_SYSROOT`，或向 CMake 传入 `-DLILYGO_UI_DEBIAN_SYSROOT=/path/to/sysroot`。AppKit 默认使用 `third_party/cm0-appkit`，可用 `-DLilyGoUI_DIR=/path/to/appkit` 指定其他版本。

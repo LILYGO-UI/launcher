@@ -1,0 +1,82 @@
+#!/bin/sh
+# BusyBox/SysV service for the K230 Buildroot image.
+set -eu
+umask 077
+DAEMON=/usr/bin/lilygo-ui-launcher
+PIDFILE=/run/lilygo-ui-launcher.pid
+CONFIG=/etc/lilygo/ui/launcher.conf
+LOG_FILE=/var/log/lilygo-ui-launcher.log
+DISPLAY_DEVICE=/dev/dri/card0
+INPUT_DEVICE=auto
+ORIENTATION=portrait
+[ ! -r "$CONFIG" ] || . "$CONFIG"
+
+is_running() {
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    # Match both PID and executable: a stale pidfile must never stop an
+    # unrelated process after Linux reuses its PID. -t sends no signal.
+    start-stop-daemon -K -t -p "$PIDFILE" -x "$DAEMON" >/dev/null 2>&1
+}
+
+case "${1:-}" in
+    start)
+        [ -x "$DAEMON" ] || exit 1
+        if is_running; then
+            echo "LILYGO UI is already running"
+            exit 0
+        fi
+        # Two direct DRM launchers cannot own the same display. The upstream
+        # service remains installed so switching shells is reversible.
+        if [ -x /etc/init.d/S99zz_k230_phone_ui ] || pidof k230_phone_ui >/dev/null 2>&1; then
+            echo "Stop and disable /etc/init.d/S99zz_k230_phone_ui before starting LILYGO UI" >&2
+            exit 1
+        fi
+        export HOME=/root USER=root LOGNAME=root
+        export XDG_RUNTIME_DIR=/run/lilygo-ui
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+        mkdir -p "$(dirname -- "$LOG_FILE")"
+        touch "$LOG_FILE"
+        chmod 600 "$LOG_FILE"
+        rm -f "$PIDFILE"
+        # BusyBox 1.37 supports -O even with -b; ordinary shell redirection
+        # alone would be discarded when start-stop-daemon backgrounds itself.
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -O "$LOG_FILE" -- \
+            --display drm --drm "$DISPLAY_DEVICE" \
+            --input "$INPUT_DEVICE" --orientation "$ORIENTATION"
+        sleep 1
+        if ! is_running; then
+            rm -f "$PIDFILE"
+            echo "LILYGO UI failed to start; see $LOG_FILE" >&2
+            exit 1
+        fi
+        echo "LILYGO UI started; log: $LOG_FILE"
+        ;;
+    stop)
+        if is_running; then
+            start-stop-daemon -K -o -p "$PIDFILE" -x "$DAEMON"
+            remaining=10
+            while is_running; do
+                [ "$remaining" -gt 0 ] || {
+                    echo "Launcher did not stop; leaving PID file for inspection" >&2
+                    exit 1
+                }
+                sleep 1
+                remaining=$((remaining - 1))
+            done
+        fi
+        rm -f "$PIDFILE"
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    status)
+        if is_running; then echo "LILYGO UI is running"; exit 0; fi
+        echo "LILYGO UI is stopped"
+        exit 3
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac

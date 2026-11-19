@@ -383,7 +383,7 @@ aarch64-linux-gnu-g++ --sysroot="$test_sysroot" \
   tests/test_first_boot_linux.cpp src/session.cpp src/setup_flow.cpp \
   "$test_sysroot/usr/lib/aarch64-linux-gnu/libpam.so.0" \
   -o build/first-boot-integration/driver
-for scenario in rename keep resume resume-home cleanup disabled full; do
+for scenario in rename keep resume resume-home cleanup disabled full new new-resume; do
   docker run --rm --network none --env LILYGO_FIRST_BOOT_DISPOSABLE_TEST=1 \
     --mount type=bind,source="$PWD",target=/source,readonly \
     --entrypoint /bin/sh pi-gen:latest /source/tests/test_first_boot_linux.sh \
@@ -398,6 +398,28 @@ completion state, and sign-in after a fresh process starts. If the container has
 `sudo`, they also execute sudo with the inherited policy and then with the
 standard password-authenticated sudo-group policy. Only systemctl is mocked,
 because these containers do not boot systemd.
+
+`new` starts with no normal account, matching canaan-gen's Launcher account
+setup mode. `new-resume` simulates a restart after `useradd` but before password
+setup. They verify the root-owned `first-boot-new-user` journal, full-wizard
+continuation, wrong-password rejection, and hardware groups. Sudo is verified
+only when the disposable image has the `sudo` package installed.
+
+`launcher-setup-region-helper` uses a fixture filesystem and mocked commands to
+exercise generic Debian locale generation, time-zone and keyboard persistence,
+Wi-Fi country restoration, Ethernet-only setup, invalid-input rejection and
+retry after errors. `launcher-setup-region` covers both this backend and the
+existing raspi-config capability branch.
+
+`tests/test_setup_region_linux.sh /source` checks the same regional helper with
+real Debian tools, confirms all settings remain root-owned mode 0644, and runs
+`systemd-analyze verify` on the Launcher and Wi-Fi country units. Run it only
+inside a fresh Docker container with `LILYGO_FIRST_BOOT_DISPOSABLE_TEST=1` and
+the repository mounted read-only at `/source`. Install `locales`, `tzdata`,
+`keyboard-configuration`, `xkb-data`, `iw`, `wireless-regdb`, `systemd` and `udev`
+in that disposable container first. The script deliberately replaces its
+fixture's `/usr/bin/lilygo-ui-launcher` with `/bin/true` for unit-file validation;
+it must never run against an installed system or a deliverable image.
 The `full` scenario commits the account with deferred cleanup, starts a fresh
 process to authenticate and resume the Network stage, then completes both the
 upstream cleanup and the durable wizard progress.

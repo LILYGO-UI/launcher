@@ -20,6 +20,7 @@ case "${1:-}" in
                 systemctl stop lilygo-ui-launcher.service || true
             fi
             systemctl disable lilygo-ui-launcher.service || true
+            systemctl disable lilygo-ui-wifi-country.service || true
 
             if [ -e "$getty_mask_file" ]; then
                 systemctl unmask getty@tty1.service || true

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Keep K230 Wi-Fi available independently of either graphical shell.
+exec /usr/bin/python3 /usr/lib/lilygo-ui-launcher/k230-network.py "${1:-}"

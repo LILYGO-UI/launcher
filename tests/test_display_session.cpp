@@ -224,6 +224,7 @@ void fbdev_and_external_deletion()
     reset();
     {
         launcher::DisplaySession session(options("fbdev"), nullptr);
+#if LV_USE_LINUX_FBDEV
         assert(session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
         auto *ui    = session.ui();
         auto *input = state.input;
@@ -234,6 +235,11 @@ void fbdev_and_external_deletion()
         assert(session.resume());
         assert(state.refreshes == before_resume + 1 && state.rebinds == 0);
         assert(state.displays.size() == 1 && state.inputs.size() == 1);
+#else
+        assert(!session.initialize(LAUNCHER_ORIENTATION_PORTRAIT));
+        assert(!session.alive());
+        assert(state.displays.empty() && state.inputs.empty());
+#endif
     }
     reset();
     for (bool display_first : {false, true}) {
@@ -420,6 +426,9 @@ void assert_paused_keyboard_poll(launcher::DisplaySession &session)
 void keyboard_orientation_across_suspend()
 {
     for (const char *backend : {"drm", "fbdev"}) {
+#if !LV_USE_LINUX_FBDEV
+        if (std::string(backend) == "fbdev") continue;
+#endif
         for (bool forced_recreation : {false, true}) {
             reset();
             if (forced_recreation) setenv("LILYGO_UI_DRM_RECREATE", "1", 1);

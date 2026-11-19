@@ -34,6 +34,7 @@ struct launcher_ui {
     lv_group_t *quick_panel_group = nullptr;
     lv_group_t *quick_panel_previous_group = nullptr;
     bool input_enabled        = true;
+    bool account_actions_enabled = true;
     bool lock_request         = false;
     bool logout_request       = false;
     int brightness_request    = -1;
@@ -375,7 +376,7 @@ static void orientation_clicked(lv_event_t *event)
 static void lock_clicked(lv_event_t *event)
 {
     auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
-    if (!ui || !ui->input_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
+    if (!ui || !ui->input_enabled || !ui->account_actions_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
     ui->pending_app = nullptr;
     ui->lock_request = true;
     play_quick_panel(ui, false);
@@ -384,7 +385,7 @@ static void lock_clicked(lv_event_t *event)
 static void logout_clicked(lv_event_t *event)
 {
     auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
-    if (!ui || !ui->input_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
+    if (!ui || !ui->input_enabled || !ui->account_actions_enabled || !ui->session_user[0] || !ui->quick_panel_open || ui->power_confirmation_open || ui->shutdown_visible) return;
     ui->logout_request = true;
     play_quick_panel(ui, false);
 }
@@ -1179,11 +1180,32 @@ void launcher_ui_set_session_user(launcher_ui_t *ui, const char *name)
     if (name && name[0]) {
         snprintf(ui->session_user, sizeof(ui->session_user), "%s", name);
         lv_obj_clear_flag(ui->view.file_share_button, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+        if (ui->account_actions_enabled) {
+            lv_obj_clear_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+        }
     } else {
         close_file_share_panel(ui);
         lv_obj_add_flag(ui->view.file_share_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    relayout(ui);
+}
+
+void launcher_ui_set_account_actions_enabled(launcher_ui_t *ui, bool enabled)
+{
+    if (!ui) return;
+    ui->account_actions_enabled = enabled;
+    if (!enabled) {
+        ui->lock_request = false;
+        ui->logout_request = false;
+    }
+    if (!ui->view.lock_button || !ui->view.session_button) return;
+    if (enabled && ui->session_user[0]) {
+        lv_obj_clear_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
         lv_obj_add_flag(ui->view.lock_button, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui->view.session_button, LV_OBJ_FLAG_HIDDEN);
     }

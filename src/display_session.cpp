@@ -179,17 +179,17 @@ bool DisplaySession::create_display()
         logging::error("SDL backend is not included in this build");
 #endif
     } else if (strcmp(options_.display_backend, "fbdev") == 0) {
-#if !defined(LAUNCHER_SIMULATOR)
+#if !defined(LAUNCHER_SIMULATOR) && LV_USE_LINUX_FBDEV
         display_ = lv_linux_fbdev_create();
         if (display_ && lv_linux_fbdev_set_file(display_, options_.fbdev_path) != LV_RESULT_OK) {
             logging::error("cannot initialize framebuffer '%s'", options_.fbdev_path);
             clear_display();
         }
 #else
-        logging::error("fbdev backend is only included in device builds");
+        logging::error("fbdev backend is not included in this build");
 #endif
     } else if (uses_drm()) {
-#if !defined(LAUNCHER_SIMULATOR)
+#if !defined(LAUNCHER_SIMULATOR) && LV_USE_LINUX_DRM
         display_ = lv_linux_drm_create();
         if (display_ && lv_linux_drm_set_file(display_, options_.drm_path, options_.drm_connector_id) != LV_RESULT_OK) {
             logging::error("cannot initialize DRM device '%s' connector %lld", options_.drm_path,
@@ -197,7 +197,7 @@ bool DisplaySession::create_display()
             clear_display();
         }
 #else
-        logging::error("DRM backend is only included in device builds");
+        logging::error("DRM backend is not included in this build");
 #endif
     } else {
         logging::error("unknown display backend '%s'", options_.display_backend);

@@ -74,6 +74,7 @@ assert_called "set-default multi-user.target"
 assert_called "stop cm0-launcher.service"
 assert_called "disable cm0-launcher.service"
 assert_called "enable lilygo-ui-launcher.service"
+assert_called "enable lilygo-ui-wifi-country.service"
 assert_called "restart lilygo-ui-launcher.service"
 
 if grep -Fx "set-default graphical.target" "$systemctl_log" >/dev/null; then
@@ -139,6 +140,7 @@ LILYGO_UI_LAUNCHER_ALLOW_REMOVE=1 \
 assert_called "stop lilygo-ui-launcher-update.service"
 assert_called "stop lilygo-ui-launcher.service"
 assert_called "disable lilygo-ui-launcher.service"
+assert_called "disable lilygo-ui-wifi-country.service"
 assert_called "unmask getty@tty1.service"
 assert_called "set-default graphical.target"
 assert_called "unmask lightdm.service"

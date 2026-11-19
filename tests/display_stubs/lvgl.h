@@ -5,6 +5,12 @@
 
 #define LV_USE_DRAW_NANOVG   0
 #define LV_USE_DRAW_OPENGLES LV_LINUX_DRM_USE_EGL
+#ifndef LV_USE_LINUX_DRM
+#define LV_USE_LINUX_DRM 1
+#endif
+#ifndef LV_USE_LINUX_FBDEV
+#define LV_USE_LINUX_FBDEV 1
+#endif
 
 struct lv_display_t;
 struct lv_indev_t;
@@ -19,10 +25,14 @@ enum { LV_EVENT_DELETE = 1, LV_EVENT_KEY = 2, LV_EVENT_PRESSED = 3, LV_INDEV_TYP
        LV_INDEV_TYPE_KEYPAD = 2, LV_KEY_ESC = 27 };
 
 void *lv_event_get_user_data(lv_event_t *event);
+#if LV_USE_LINUX_FBDEV
 lv_display_t *lv_linux_fbdev_create();
-lv_display_t *lv_linux_drm_create();
 lv_result_t lv_linux_fbdev_set_file(lv_display_t *display, const char *path);
+#endif
+#if LV_USE_LINUX_DRM
+lv_display_t *lv_linux_drm_create();
 lv_result_t lv_linux_drm_set_file(lv_display_t *display, const char *path, int64_t connector);
+#endif
 #if LV_LINUX_DRM_USE_EGL && defined(LILYGO_UI_HAS_DRM_HANDOFF)
 lv_result_t lv_linux_drm_suspend(lv_display_t *display);
 lv_result_t lv_linux_drm_resume(lv_display_t *display);

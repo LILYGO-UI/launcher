@@ -1,5 +1,8 @@
 # LILYGO UI Launcher
 
+For T-Display-K230 Linux builds and the BusyBox/SysV service, see
+[K230 adaptation](docs/k230.md).
+
 English | [简体中文](README.zh-CN.md)
 
 LILYGO UI Launcher is an LVGL application launcher for LILYGO Linux products.
@@ -590,3 +593,15 @@ device node and connector are already available. The device DRM backend waits
 up to ten seconds to acquire master before initializing KMS. Its first atomic
 modeset remains retryable until a commit succeeds, and DRM warnings and errors
 are forwarded to the service journal.
+
+### K230 Debian riscv64 with LPM
+
+Install `gcc-riscv64-linux-gnu` and `g++-riscv64-linux-gnu` on Linux, or LLVM, LLD and dpkg on macOS (`brew install llvm lld dpkg`). From this application's repository, run the packaging command.
+
+```sh
+lpm pack --arch riscv64
+```
+
+The `k230-debian` CMake preset downloads the pinned Debian BSP from the `LILYGO-UI/canaan-gen` release and verifies its SHA-256. It keeps the archive and `sysroot/` in this project's `.cache/k230-bsp/20261116T104343Z/`. The next build reuses the cache offline, even with a new `build/` directory. Packages appear in `dist/`.
+
+Run `lpm set-target k230` once to use `lpm pack` for subsequent builds. To use your own Debian sysroot, set `LILYGO_UI_DEBIAN_SYSROOT` before the first configure, or pass `-DLILYGO_UI_DEBIAN_SYSROOT=/path/to/sysroot` to CMake. The pinned `third_party/cm0-appkit` supplies the application SDK. `-DLilyGoUI_DIR=/path/to/appkit` selects another copy.
