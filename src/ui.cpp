@@ -40,7 +40,9 @@ struct launcher_ui {
     int brightness_request    = -1;
     int volume_request        = -1;
     bool power_request        = false;
+    bool reboot_request       = false;
     bool power_confirmation_open = false;
+    bool power_confirmation_reboot = false;
     bool file_share_open      = false;
     bool file_share_approval_visible = false;
     bool file_share_decision_pending = false;
@@ -182,11 +184,12 @@ static void capture_quick_panel_input(launcher_ui_t *ui)
     }
 }
 
-static std::array<lv_obj_t *, 9> quick_control_objects(launcher_ui_t *ui)
+static std::array<lv_obj_t *, 10> quick_control_objects(launcher_ui_t *ui)
 {
     return {ui->view.orientation_button, ui->view.file_share_button, ui->view.lock_button,
-            ui->view.session_button, ui->view.power_button, ui->view.brightness_slider,
-            ui->view.volume_slider, ui->view.power_cancel_button, ui->view.power_confirm_button};
+            ui->view.session_button, ui->view.power_button, ui->view.reboot_button,
+            ui->view.brightness_slider, ui->view.volume_slider, ui->view.power_cancel_button,
+            ui->view.power_confirm_button};
 }
 
 static void quick_control_focused(lv_event_t *event)
@@ -215,8 +218,8 @@ static void populate_quick_panel_group(launcher_ui_t *ui)
     if (!ui->quick_panel_group) return;
     lv_group_remove_all_objs(ui->quick_panel_group);
     const auto controls = quick_control_objects(ui);
-    const size_t begin = ui->power_confirmation_open ? 7 : 0;
-    const size_t end = ui->power_confirmation_open ? 9 : 7;
+    const size_t begin = ui->power_confirmation_open ? 8 : 0;
+    const size_t end = ui->power_confirmation_open ? 10 : 8;
     for (size_t i = begin; i < end; ++i) {
         if (!lv_obj_has_flag(controls[i], LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_state(controls[i], LV_STATE_DISABLED))
             lv_group_add_obj(ui->quick_panel_group, controls[i]);
@@ -228,11 +231,12 @@ static void close_power_confirmation(launcher_ui_t *ui)
     if (!ui->power_confirmation_open) return;
     ui->power_confirmation_open = false;
     ui->power_request = false;
+    ui->reboot_request = false;
     ui->power_busy = false;
     lv_obj_add_flag(ui->view.power_confirm_scrim, LV_OBJ_FLAG_HIDDEN);
     populate_quick_panel_group(ui);
     if (ui->quick_panel_group) {
-        lv_group_focus_obj(ui->view.power_button);
+        lv_group_focus_obj(ui->power_confirmation_reboot ? ui->view.reboot_button : ui->view.power_button);
     }
 }
 
@@ -517,17 +521,21 @@ static void level_changed(lv_event_t *event)
     lv_label_set_text_fmt(brightness ? ui->view.brightness_label : ui->view.volume_label, "%d%%", value);
 }
 
-static void power_clicked(lv_event_t *event)
+static void open_power_confirmation(launcher_ui_t *ui, bool reboot)
 {
-    auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
     if (!ui || !ui->input_enabled || !ui->quick_panel_open || ui->power_confirmation_open ||
-        ui->shutdown_visible || lv_obj_has_state(ui->view.power_button, LV_STATE_DISABLED)) return;
+        ui->shutdown_visible) return;
+    lv_obj_t *button = reboot ? ui->view.reboot_button : ui->view.power_button;
+    if (!button || lv_obj_has_state(button, LV_STATE_DISABLED)) return;
     ui->pending_app = nullptr;
     ui->pull_tracking = false;
     ui->power_confirmation_open = true;
+    ui->power_confirmation_reboot = reboot;
     ui->power_busy = false;
-    lv_label_set_text(ui->view.power_confirm_title, "Power off?");
-    lv_label_set_text(ui->view.power_confirm_hint, "This will turn off your device.");
+    lv_label_set_text(ui->view.power_confirm_title, reboot ? "Restart?" : "Power off?");
+    lv_label_set_text(ui->view.power_confirm_hint,
+                      reboot ? "This will restart your device." : "This will turn off your device.");
+    lv_label_set_text(ui->view.power_confirm_label, reboot ? "Restart" : "Power off");
     lv_obj_remove_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_state(ui->view.power_confirm_button, LV_STATE_DISABLED);
     lv_obj_remove_state(ui->view.power_cancel_button, LV_STATE_DISABLED);
@@ -535,6 +543,16 @@ static void power_clicked(lv_event_t *event)
     lv_obj_move_foreground(ui->view.power_confirm_scrim);
     populate_quick_panel_group(ui);
     lv_group_focus_obj(ui->view.power_cancel_button);
+}
+
+static void power_clicked(lv_event_t *event)
+{
+    open_power_confirmation(static_cast<launcher_ui_t *>(lv_event_get_user_data(event)), false);
+}
+
+static void reboot_clicked(lv_event_t *event)
+{
+    open_power_confirmation(static_cast<launcher_ui_t *>(lv_event_get_user_data(event)), true);
 }
 
 static void power_cancelled(lv_event_t *event)
@@ -548,9 +566,11 @@ static void power_confirmed(lv_event_t *event)
     auto *ui = static_cast<launcher_ui_t *>(lv_event_get_user_data(event));
     if (!ui || !ui->input_enabled || !ui->power_confirmation_open || ui->power_busy ||
         lv_obj_has_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN)) return;
-    ui->power_request = true;
+    const bool reboot = ui->power_confirmation_reboot;
+    if (reboot) ui->reboot_request = true;
+    else ui->power_request = true;
     ui->power_busy = true;
-    lv_label_set_text(ui->view.power_confirm_title, "Powering off");
+    lv_label_set_text(ui->view.power_confirm_title, reboot ? "Restarting" : "Powering off");
     lv_label_set_text(ui->view.power_confirm_hint, "Please wait...");
     lv_obj_add_state(ui->view.power_confirm_button, LV_STATE_DISABLED);
     lv_obj_add_state(ui->view.power_cancel_button, LV_STATE_DISABLED);
@@ -1037,9 +1057,11 @@ launcher_ui_t *launcher_ui_create(launcher_registry_t *registry)
     lv_obj_add_event_cb(ui->view.volume_slider, level_changed, LV_EVENT_VALUE_CHANGED, ui);
     for (lv_obj_t *control : {ui->view.orientation_button, ui->view.file_share_button, ui->view.lock_button,
                               ui->view.session_button,
-                              ui->view.power_button, ui->view.brightness_slider, ui->view.volume_slider})
+                              ui->view.power_button, ui->view.reboot_button, ui->view.brightness_slider,
+                              ui->view.volume_slider})
         lv_obj_add_event_cb(control, quick_control_focused, LV_EVENT_FOCUSED, ui);
     lv_obj_add_event_cb(ui->view.power_button, power_clicked, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->view.reboot_button, reboot_clicked, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->view.power_cancel_button, power_cancelled, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->view.power_confirm_button, power_confirmed, LV_EVENT_CLICKED, ui);
     attach_pull_down_input(ui);
@@ -1073,6 +1095,14 @@ void launcher_ui_destroy(launcher_ui_t *ui)
         lv_obj_remove_event_cb_with_user_data(ui->view.orientation_button, orientation_clicked, ui);
     if (ui->view.file_share_button)
         lv_obj_remove_event_cb_with_user_data(ui->view.file_share_button, file_share_clicked, ui);
+    if (ui->view.power_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.power_button, power_clicked, ui);
+    if (ui->view.reboot_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.reboot_button, reboot_clicked, ui);
+    if (ui->view.power_cancel_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.power_cancel_button, power_cancelled, ui);
+    if (ui->view.power_confirm_button)
+        lv_obj_remove_event_cb_with_user_data(ui->view.power_confirm_button, power_confirmed, ui);
     if (ui->view.session_button)
         lv_obj_remove_event_cb_with_user_data(ui->view.session_button, logout_clicked, ui);
     if (ui->view.lock_button)
@@ -1227,12 +1257,14 @@ bool launcher_ui_take_logout_request(launcher_ui_t *ui)
 }
 
 void launcher_ui_set_system_controls(launcher_ui_t *ui, bool brightness_available, int brightness_percent,
-                                     bool volume_available, int volume_percent, bool power_available)
+                                     bool volume_available, int volume_percent, bool power_available,
+                                     bool reboot_available)
 {
     if (!ui || !ui->view.screen) return;
     const bool capability_changed = brightness_available == lv_obj_has_state(ui->view.brightness_slider, LV_STATE_DISABLED) ||
         volume_available == lv_obj_has_state(ui->view.volume_slider, LV_STATE_DISABLED) ||
-        power_available == lv_obj_has_state(ui->view.power_button, LV_STATE_DISABLED);
+        power_available == lv_obj_has_state(ui->view.power_button, LV_STATE_DISABLED) ||
+        reboot_available == lv_obj_has_state(ui->view.reboot_button, LV_STATE_DISABLED);
     if (!brightness_available || (!lv_slider_is_dragged(ui->view.brightness_slider) && ui->brightness_request < 0))
         launcher_view_set_control_level(ui->view.brightness_slider, ui->view.brightness_label,
                                         brightness_available, brightness_percent);
@@ -1242,6 +1274,8 @@ void launcher_ui_set_system_controls(launcher_ui_t *ui, bool brightness_availabl
     if (!volume_available) ui->volume_request = -1;
     if (power_available) lv_obj_remove_state(ui->view.power_button, LV_STATE_DISABLED);
     else lv_obj_add_state(ui->view.power_button, LV_STATE_DISABLED);
+    if (reboot_available) lv_obj_remove_state(ui->view.reboot_button, LV_STATE_DISABLED);
+    else lv_obj_add_state(ui->view.reboot_button, LV_STATE_DISABLED);
     if (capability_changed && ui->quick_panel_group && !ui->power_confirmation_open) {
         lv_obj_t *focused = lv_group_get_focused(ui->quick_panel_group);
         populate_quick_panel_group(ui);
@@ -1275,6 +1309,13 @@ bool launcher_ui_take_power_request(launcher_ui_t *ui)
 {
     if (!ui || !ui->power_request) return false;
     ui->power_request = false;
+    return true;
+}
+
+bool launcher_ui_take_reboot_request(launcher_ui_t *ui)
+{
+    if (!ui || !ui->reboot_request) return false;
+    ui->reboot_request = false;
     return true;
 }
 
@@ -1329,8 +1370,11 @@ bool launcher_ui_file_share_open(const launcher_ui_t *ui)
 void launcher_ui_set_power_result(launcher_ui_t *ui, bool success, bool simulated)
 {
     if (!ui || !ui->view.screen || !ui->power_confirmation_open) return;
+    const bool reboot = ui->power_confirmation_reboot;
     ui->power_busy = success && !simulated;
-    lv_label_set_text(ui->view.power_confirm_title, success ? (simulated ? "Simulation complete" : "Powering off") : "Couldn't power off");
+    lv_label_set_text(ui->view.power_confirm_title,
+                      success ? (simulated ? "Simulation complete" : (reboot ? "Restarting" : "Powering off"))
+                              : (reboot ? "Couldn't restart" : "Couldn't power off"));
     lv_label_set_text(ui->view.power_confirm_hint, success ? (simulated ? "Your computer will stay on." : "Please wait...") :
                                                            "Please try again.");
     if (success) lv_obj_add_flag(ui->view.power_confirm_button, LV_OBJ_FLAG_HIDDEN);
@@ -1354,6 +1398,7 @@ void launcher_ui_set_input_enabled(launcher_ui_t *ui, bool enabled)
         ui->brightness_request = -1;
         ui->volume_request = -1;
         ui->power_request = false;
+        ui->reboot_request = false;
         close_file_share_panel(ui);
         play_quick_panel(ui, false);
     }
@@ -1492,6 +1537,7 @@ void launcher_ui_show_shutdown(launcher_ui_t *ui)
     if (!ui || !ui->view.shutdown_scrim || ui->shutdown_visible) return;
     ui->shutdown_visible = true;
     ui->power_request = false;
+    ui->reboot_request = false;
     close_file_share_panel(ui);
     play_quick_panel(ui, false);
     lv_obj_clear_flag(ui->view.shutdown_scrim, LV_OBJ_FLAG_HIDDEN);

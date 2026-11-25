@@ -22,6 +22,7 @@ constexpr int32_t kControlFocusWidth = 3;
 constexpr char kLockSymbol[]    = "\xEF\x80\xA3"; // U+F023, lock
 constexpr char kSignOutSymbol[] = "\xEF\x8B\xB5"; // U+F2F5, sign-out-alt
 constexpr char kShareSymbol[]   = "\xEF\x87\xA0"; // U+F1E0, share-alt
+constexpr char kRestartSymbol[] = "\xEF\x8B\xB1"; // U+F2F1, sync-alt
 
 /* The GLES and NanoVG draw units do not consume LV_DRAW_TASK_TYPE_BLUR.  In
  * those modes a backdrop blur task would be handed to the software unit
@@ -438,6 +439,7 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     lv_obj_set_style_text_font(session_text, font_22, 0);
 
     lv_obj_t *power_group = create_control_group(controls, "quick_power");
+    lv_obj_set_flex_flow(power_group, LV_FLEX_FLOW_COLUMN);
     lv_obj_t *power = lv_button_create(power_group);
     lv_obj_set_name_static(power, "power_button");
     lv_obj_set_size(power, 220, 104);
@@ -455,6 +457,24 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     make_decoration(power_label);
     lv_label_set_text(power_label, "Power off");
     lv_obj_set_style_text_font(power_label, font_22, 0);
+
+    lv_obj_t *reboot = lv_button_create(power_group);
+    lv_obj_set_name_static(reboot, "reboot_button");
+    lv_obj_set_size(reboot, 220, 104);
+    style_quick_control(reboot);
+    lv_obj_set_style_pad_all(reboot, 0, 0);
+    lv_obj_set_style_pad_column(reboot, 14, 0);
+    lv_obj_set_flex_flow(reboot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(reboot, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *reboot_icon = lv_label_create(reboot);
+    make_decoration(reboot_icon);
+    lv_label_set_text(reboot_icon, kRestartSymbol);
+    lv_obj_set_style_text_font(reboot_icon, font_28, 0);
+    lv_obj_set_style_text_color(reboot_icon, lv_color_hex(launcher::theme::kDestructive), 0);
+    lv_obj_t *reboot_label = lv_label_create(reboot);
+    make_decoration(reboot_label);
+    lv_label_set_text(reboot_label, "Restart");
+    lv_obj_set_style_text_font(reboot_label, font_22, 0);
 
     lv_obj_t *levels = create_control_group(controls, "quick_levels");
     create_level_card(levels, "brightness_card", "brightness_slider", "brightness_label", "Brightness", true,
@@ -491,6 +511,7 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     view->session_button = session;
     view->session_label = session_text;
     view->power_button = power;
+    view->reboot_button = reboot;
     return panel;
 }
 
@@ -589,6 +610,7 @@ lv_obj_t *create_power_confirmation(launcher_view_t *view)
     lv_obj_set_style_text_color(confirm, lv_color_hex(0xffffff), 0);
     lv_obj_t *confirm_text = lv_label_create(confirm);
     make_decoration(confirm_text);
+    lv_obj_set_name_static(confirm_text, "power_confirm_label");
     lv_label_set_text(confirm_text, "Power off");
     lv_obj_center(confirm_text);
 
@@ -596,6 +618,7 @@ lv_obj_t *create_power_confirmation(launcher_view_t *view)
     view->power_confirm_hint = hint;
     view->power_cancel_button = cancel;
     view->power_confirm_button = confirm;
+    view->power_confirm_label = confirm_text;
     lv_obj_add_event_cb(scrim, power_confirmation_resized, LV_EVENT_SIZE_CHANGED, nullptr);
     return scrim;
 }
@@ -853,9 +876,10 @@ bool launcher_view_create(launcher_view_t *view)
            view->file_share_approve_button && view->file_share_reject_button && view->file_share_close_button &&
            view->lock_button && view->session_button &&
            view->session_label && view->home_indicator && view->brightness_overlay && view->power_button &&
+           view->reboot_button &&
            view->brightness_slider && view->brightness_label && view->volume_slider && view->volume_label &&
            view->power_confirm_scrim && view->power_confirm_button && view->power_cancel_button &&
-           view->power_confirm_title && view->power_confirm_hint &&
+           view->power_confirm_title && view->power_confirm_hint && view->power_confirm_label &&
            view->shutdown_scrim && view->shutdown_panel;
 }
 
@@ -918,12 +942,13 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     const int32_t card_height = height < 260 ? 44 : (compact ? 84 : 104);
     const int32_t actions_width = columns * card_width + (columns - 1) * card_gap;
     const int32_t actions_height = rows * card_height + (rows - 1) * card_gap;
+    const int32_t power_height = 2 * card_height + card_gap;
     const int32_t levels_width = std::min(452, available_width);
     const int32_t level_width = (levels_width - card_gap) / 2;
     const int32_t levels_height = height < 260 ? 208 : (compact ? 232 : 264);
     const bool side_by_side = actions_width + card_gap + card_width + card_gap + levels_width <= available_width;
-    const int32_t controls_height = controls_pad_y + (side_by_side ? std::max({actions_height, card_height, levels_height}) :
-                                                                     actions_height + card_gap + card_height + card_gap + levels_height);
+    const int32_t controls_height = controls_pad_y + (side_by_side ? std::max({actions_height, power_height, levels_height}) :
+                                                                     actions_height + card_gap + power_height + card_gap + levels_height);
     const int32_t panel_height = std::min(height, std::max(compact ? 190 : 260,
                                                           chrome_height + controls_height));
 
@@ -947,8 +972,9 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     }
     lv_obj_set_size(lv_obj_get_parent(view->orientation_button), actions_width, actions_height);
     lv_obj_t *power_group = lv_obj_get_parent(view->power_button);
-    lv_obj_set_size(power_group, card_width, card_height);
+    lv_obj_set_size(power_group, card_width, power_height);
     lv_obj_set_size(view->power_button, card_width, card_height);
+    lv_obj_set_size(view->reboot_button, card_width, card_height);
     lv_obj_t *sliders[] = {view->brightness_slider, view->volume_slider};
     for (lv_obj_t *slider : sliders) {
         lv_obj_t *card = lv_obj_get_parent(slider);

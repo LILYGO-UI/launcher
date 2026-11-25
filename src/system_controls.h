@@ -16,6 +16,7 @@ struct SystemControlsState {
     bool volume_available = false;
     int volume_percent = 0;
     bool power_off_available = false;
+    bool reboot_available = false;
     bool simulated = false;
 };
 
@@ -41,14 +42,16 @@ public:
     bool set_brightness(int percent);
     bool set_volume(int percent);
 
-    // Call only after confirmation. Simulator builds never shut down the host.
-    // On Linux, success means init accepted an orderly power-off request.
+    // Call only after confirmation. Simulator builds never power off or reboot
+    // the host. On Linux, success means init accepted an orderly request.
     bool power_off();
+    bool reboot();
     const std::string &error() const { return error_; }
 
 private:
     void refresh_brightness();
     void refresh_volume();
+    bool request(const char *action, const char *command, bool systemd, const char *target);
     bool fail(const char *message);
 
     SystemControlsState state_;

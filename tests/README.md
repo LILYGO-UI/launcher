@@ -249,7 +249,9 @@ rejection of unsafe state. These tests never alter host accounts.
 the prefilled first-use form, retained-name submission, error retries, busy
 feedback, keyboard focus isolation, hotplug input capture, and layout changes.
 `launcher-render-ui` checks lock-button activation, blocked home actions while
-locked, and Quick controls geometry in portrait and compact landscape.
+locked, and Quick controls geometry in portrait and compact landscape. It also
+confirms restart uses the same confirmation card as power off while keeping
+the power and restart requests independent.
 
 The complete first-boot flow adds:
 
