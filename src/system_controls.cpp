@@ -54,6 +54,46 @@ const char *local_poweroff_path()
     return nullptr;
 }
 
+const char *local_reboot_path()
+{
+#if defined(LAUNCHER_SYSTEM_SESSION) && !LAUNCHER_SYSTEM_SESSION
+    // BusyBox reboot behaves like poweroff: let init run its shutdown scripts.
+    if (geteuid() != 0) return nullptr;
+    for (const char *path : {"/sbin/reboot", "/usr/sbin/reboot"})
+        if (access(path, X_OK) == 0) return path;
+#endif
+    return nullptr;
+}
+
+enum class RequestResult {
+    success,
+    spawn_failed,
+    command_failed,
+    timed_out,
+};
+
+RequestResult run_request(const char *command, char *const arguments[])
+{
+    pid_t child = -1;
+    if (posix_spawn(&child, command, nullptr, nullptr, const_cast<char **>(arguments), environ) != 0)
+        return RequestResult::spawn_failed;
+    // Bound the request even if init or the system bus stops responding.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    int status = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) {
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return RequestResult::success;
+            return RequestResult::command_failed;
+        }
+        if (result < 0 && errno != EINTR) return RequestResult::command_failed;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    kill(child, SIGKILL);
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    return RequestResult::timed_out;
+}
+
 #endif
 
 } // namespace
@@ -78,6 +118,7 @@ SystemControls::SystemControls(bool simulated, lilygo::ui::HardwarePaths paths)
         state_.volume_available = true;
         state_.volume_percent = 45;
         state_.power_off_available = true;
+        state_.reboot_available = true;
     }
     refresh();
 }
@@ -88,8 +129,12 @@ const SystemControlsState &SystemControls::refresh()
     refresh_brightness();
     refresh_volume();
 #if defined(__linux__) && !defined(LAUNCHER_SIMULATOR)
-    state_.power_off_available =
-        (systemctl_path() && access("/run/systemd/system", F_OK) == 0) || local_poweroff_path();
+    const bool systemd = systemctl_path() && access("/run/systemd/system", F_OK) == 0;
+    state_.power_off_available = systemd || local_poweroff_path();
+    state_.reboot_available = systemd || local_reboot_path();
+#else
+    state_.power_off_available = false;
+    state_.reboot_available = false;
 #endif
     return state_;
 }
@@ -184,31 +229,54 @@ bool SystemControls::power_off()
     const bool systemd = access("/run/systemd/system", F_OK) == 0;
     const char *command = systemd ? systemctl_path() : local_poweroff_path();
     if (!command || !state_.power_off_available) return fail("Power off is unavailable");
-    char *systemd_arguments[] = {const_cast<char *>(command), const_cast<char *>("--no-block"),
-                                const_cast<char *>("--no-ask-password"),
-                                const_cast<char *>("poweroff"), nullptr};
-    char *local_arguments[] = {const_cast<char *>(command), nullptr};
-    char **arguments = systemd ? systemd_arguments : local_arguments;
-    pid_t child = -1;
-    if (posix_spawn(&child, command, nullptr, nullptr, arguments, environ) != 0)
-        return fail("Could not request power off");
-    // Bound the request even if init or the system bus stops responding.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    int status = 0;
-    while (std::chrono::steady_clock::now() < deadline) {
-        const pid_t result = waitpid(child, &status, WNOHANG);
-        if (result == child) {
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
-            return fail("The system could not power off");
-        }
-        if (result < 0 && errno != EINTR) return fail("Could not confirm power off");
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    kill(child, SIGKILL);
-    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-    return fail("The power off request timed out");
+    return request("power off", command, systemd, "poweroff");
 #else
     return fail("Power off is unavailable");
+#endif
+}
+
+bool SystemControls::reboot()
+{
+    error_.clear();
+    if (state_.simulated) return true;
+#if defined(__linux__) && !defined(LAUNCHER_SIMULATOR)
+    const bool systemd = access("/run/systemd/system", F_OK) == 0;
+    const char *command = systemd ? systemctl_path() : local_reboot_path();
+    if (!command || !state_.reboot_available) return fail("Restart is unavailable");
+    return request("restart", command, systemd, "reboot");
+#else
+    return fail("Restart is unavailable");
+#endif
+}
+
+bool SystemControls::request(const char *action, const char *command, bool systemd, const char *target)
+{
+#if defined(__linux__) && !defined(LAUNCHER_SIMULATOR)
+    char *systemd_arguments[] = {const_cast<char *>(command), const_cast<char *>("--no-block"),
+                                const_cast<char *>("--no-ask-password"), const_cast<char *>(target),
+                                nullptr};
+    char *local_arguments[] = {const_cast<char *>(command), nullptr};
+    char **arguments = systemd ? systemd_arguments : local_arguments;
+    switch (run_request(command, arguments)) {
+        case RequestResult::success:
+            return true;
+        case RequestResult::spawn_failed:
+            error_ = std::string("Could not request ") + action;
+            return false;
+        case RequestResult::command_failed:
+            error_ = std::string("The system could not ") + action;
+            return false;
+        case RequestResult::timed_out:
+            error_ = std::string("The ") + action + " request timed out";
+            return false;
+    }
+    return fail("The system request failed");
+#else
+    (void)action;
+    (void)command;
+    (void)systemd;
+    (void)target;
+    return fail("The system request is unavailable");
 #endif
 }
 

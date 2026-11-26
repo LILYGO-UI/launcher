@@ -196,6 +196,18 @@ static uint32_t active_page_index(lv_obj_t *pages)
     return lv_obj_get_index(active);
 }
 
+static void assert_power_actions_share_row(lv_obj_t *screen)
+{
+    lv_area_t power, restart, group;
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "power_button"), &power);
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "reboot_button"), &restart);
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "quick_power"), &group);
+    assert(power.y1 == restart.y1 && power.y2 == restart.y2);
+    assert(restart.x1 - power.x2 == 13); /* 12 px gap, inclusive LVGL bounds */
+    assert(lv_area_get_width(&power) == lv_area_get_width(&restart));
+    assert(power.x1 >= group.x1 && restart.x2 <= group.x2);
+}
+
 static void assert_session_actions_fit(lv_obj_t *screen)
 {
     lv_obj_t *panel = lv_obj_find_by_name(screen, "quick_panel");
@@ -418,9 +430,10 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
     lv_obj_t *lock = lv_obj_find_by_name(screen, "lock_button");
     lv_obj_t *logout = lv_obj_find_by_name(screen, "session_button");
     lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *reboot = lv_obj_find_by_name(screen, "reboot_button");
     lv_obj_t *brightness = lv_obj_find_by_name(screen, "brightness_slider");
     lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
-    assert(viewport && orientation && share && lock && logout && power && brightness && volume);
+    assert(viewport && orientation && share && lock && logout && power && reboot && brightness && volume);
     assert(!lv_obj_has_flag(lv_obj_find_by_name(screen, "quick_scrim"), LV_OBJ_FLAG_HIDDEN));
     lv_group_t *controls_group = lv_obj_get_group(orientation);
     assert(controls_group && controls_group != group);
@@ -437,12 +450,12 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
     /* Complete both cycles: Tab from the last card and Shift+Tab from the
      * first card must wrap within the open panel instead of reaching apps. */
     const uint32_t keys[] = {
-        LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT,
-        LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV,
+        LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT,
+        LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV,
     };
     lv_obj_t *expected[] = {
-        share, lock, logout, power, brightness, volume, orientation,
-        volume, brightness, power, logout, lock, share, orientation,
+        share, lock, logout, power, reboot, brightness, volume, orientation,
+        volume, brightness, reboot, power, logout, lock, share, orientation,
     };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
         sample_keyboard(keyboard, keys[i], LV_INDEV_STATE_PRESSED, 0);
@@ -456,7 +469,7 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
         sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_PRESSED, 150);
         lv_obj_t *focused = lv_group_get_focused(lv_indev_get_group(keyboard));
         assert(focused == orientation || focused == share || focused == lock || focused == logout ||
-               focused == power || focused == brightness || focused == volume);
+               focused == power || focused == reboot || focused == brightness || focused == volume);
     }
     sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_RELEASED, 0);
     lv_group_focus_obj(orientation);
@@ -621,7 +634,7 @@ static void test_keyboard_navigation(launcher_ui_t *ui, launcher_registry_t *reg
     /* Hidden account controls and unavailable system controls must be skipped
      * in both directions, leaving the orientation card as the only action. */
     launcher_ui_set_session_user(ui, NULL);
-    launcher_ui_set_system_controls(ui, false, 0, false, 0, false);
+    launcher_ui_set_system_controls(ui, false, 0, false, 0, false, false);
     sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
     sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
@@ -650,7 +663,7 @@ static void test_keyboard_navigation(launcher_ui_t *ui, launcher_registry_t *reg
     assert(!launcher_ui_take_launch_request(ui));
     launcher_ui_set_input_enabled(ui, true);
     launcher_ui_set_session_user(ui, NULL);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     lv_indev_delete(keyboard);
 }
 
@@ -670,12 +683,15 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
     lv_obj_t *volume_label = lv_obj_find_by_name(screen, "volume_label");
     lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *reboot = lv_obj_find_by_name(screen, "reboot_button");
     lv_obj_t *confirmation = lv_obj_find_by_name(screen, "power_confirm_scrim");
     lv_obj_t *confirm = lv_obj_find_by_name(screen, "power_confirm_button");
     lv_obj_t *cancel = lv_obj_find_by_name(screen, "power_cancel_button");
     lv_obj_t *hint = lv_obj_find_by_name(screen, "power_confirm_hint");
-    assert(quick_scrim && orientation && brightness && brightness_label && volume && volume_label && power);
-    assert(confirmation && confirm && cancel && hint);
+    lv_obj_t *title = lv_obj_find_by_name(screen, "power_confirm_title");
+    lv_obj_t *confirm_label = lv_obj_find_by_name(screen, "power_confirm_label");
+    assert(quick_scrim && orientation && brightness && brightness_label && volume && volume_label && power && reboot);
+    assert(confirmation && confirm && cancel && hint && title && confirm_label);
     assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
 
     keyboard_sample_t sample = {0, LV_INDEV_STATE_RELEASED, false};
@@ -689,7 +705,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_timer_pause(lv_indev_get_read_timer(keyboard));
     int requested = -1;
 
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     press_key(keyboard, ' ');
     settle_focus_render(display);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
@@ -720,14 +736,14 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* The backlight cannot be turned completely off; muted audio can reach
      * zero. Hardware samples outside the supported range are also clamped. */
-    launcher_ui_set_system_controls(ui, true, -20, true, 140, true);
+    launcher_ui_set_system_controls(ui, true, -20, true, 140, true, true);
     assert(lv_slider_get_value(brightness) == 1);
     assert(lv_slider_get_value(volume) == 100);
     lv_group_focus_obj(brightness);
     press_key(keyboard, LV_KEY_DOWN);
     assert(lv_slider_get_value(brightness) == 1);
     if (launcher_ui_take_brightness_request(ui, &requested)) assert(requested == 1);
-    launcher_ui_set_system_controls(ui, true, 98, true, 2, true);
+    launcher_ui_set_system_controls(ui, true, 98, true, 2, true, true);
     press_key(keyboard, LV_KEY_UP);
     assert(launcher_ui_take_brightness_request(ui, &requested) && requested == 100);
     lv_group_focus_obj(volume);
@@ -736,7 +752,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* Exercise real pointer input: dragging a vertical level card must not
      * trigger the panel's upward-dismiss gesture or lose the final value. */
-    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true, true);
     lv_group_focus_obj(brightness);
     settle_focus_render(display);
     lv_area_t slider_area;
@@ -750,7 +766,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_indev_read(pointer);
     assert(lv_slider_get_value(brightness) >= 75);
     const int dragged_brightness = lv_slider_get_value(brightness);
-    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true, true);
     assert(lv_slider_get_value(brightness) == dragged_brightness);
     pointer_state = LV_INDEV_STATE_RELEASED;
     lv_indev_read(pointer);
@@ -760,24 +776,27 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* Missing devices stay visibly unavailable, ignore synthetic value
      * events, and are omitted from keyboard navigation. */
-    launcher_ui_set_system_controls(ui, false, 50, false, 50, false);
+    launcher_ui_set_system_controls(ui, false, 50, false, 50, false, false);
     assert(lv_obj_has_state(brightness, LV_STATE_DISABLED));
     assert(lv_obj_has_state(volume, LV_STATE_DISABLED));
     assert(lv_obj_has_state(power, LV_STATE_DISABLED));
+    assert(lv_obj_has_state(reboot, LV_STATE_DISABLED));
     assert(strcmp(lv_label_get_text(brightness_label), "--") == 0);
     assert(strcmp(lv_label_get_text(volume_label), "--") == 0);
     assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
     assert(lv_obj_send_event(volume, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
     assert(lv_obj_send_event(power, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(reboot, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(!launcher_ui_take_brightness_request(ui, &requested));
     assert(!launcher_ui_take_volume_request(ui, &requested));
     assert(!launcher_ui_take_power_request(ui));
+    assert(!launcher_ui_take_reboot_request(ui));
     assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
     lv_group_focus_obj(orientation);
     press_key(keyboard, LV_KEY_NEXT);
     assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == orientation);
 
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     lv_group_focus_obj(power);
     sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
     assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
@@ -824,6 +843,39 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     assert(strstr(lv_label_get_text(hint), "stay on"));
     press_key(keyboard, LV_KEY_ESC);
 
+    /* Restart reuses the same confirmation card but targets reboot, so the
+     * power request must stay untouched and only the reboot request fires. */
+    lv_group_focus_obj(reboot);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(title), "Restart?") == 0);
+    assert(strstr(lv_label_get_text(hint), "restart"));
+    assert(strcmp(lv_label_get_text(confirm_label), "Restart") == 0);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == cancel);
+    press_key(keyboard, LV_KEY_ENTER); /* Cancel is initially selected. */
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(!launcher_ui_take_reboot_request(ui));
+    lv_group_focus_obj(reboot);
+    press_key(keyboard, LV_KEY_ENTER);
+    press_key(keyboard, LV_KEY_NEXT);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == confirm);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(launcher_ui_take_reboot_request(ui));
+    assert(!launcher_ui_take_power_request(ui));
+    assert(lv_label_get_text(title) && strstr(lv_label_get_text(title), "Restart"));
+    launcher_ui_set_power_result(ui, false, false);
+    assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(strstr(lv_label_get_text(title), "restart"));
+    assert(lv_obj_has_flag(confirm, LV_OBJ_FLAG_HIDDEN) == false);
+    lv_group_focus_obj(confirm);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(launcher_ui_take_reboot_request(ui));
+    assert(!launcher_ui_take_power_request(ui));
+    launcher_ui_set_power_result(ui, true, true);
+    assert(strstr(lv_label_get_text(hint), "stay on"));
+    press_key(keyboard, LV_KEY_ESC);
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+
     /* Transitioning to the account screen clears requests already queued by
      * all three controls and rejects subsequent events on hidden objects. */
     lv_slider_set_value(brightness, 70, LV_ANIM_OFF);
@@ -842,13 +894,15 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
     assert(lv_obj_send_event(volume, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
     assert(lv_obj_send_event(power, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    assert(lv_obj_send_event(reboot, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(lv_obj_send_event(confirm, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(!launcher_ui_take_brightness_request(ui, &requested));
     assert(!launcher_ui_take_volume_request(ui, &requested));
     assert(!launcher_ui_take_power_request(ui));
+    assert(!launcher_ui_take_reboot_request(ui));
     assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
     launcher_ui_set_input_enabled(ui, true);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     settle_focus_render(display);
     assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
     lv_indev_delete(keyboard);
@@ -924,7 +978,7 @@ int main(int argc, char **argv)
     lv_obj_t *previous_screen        = lv_screen_active();
     launcher_ui_t *ui                = launcher_ui_create(&registry);
     assert(ui);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     assert(lv_indev_get_event_count(input) == input_event_count + 3);
     lv_obj_update_layout(lv_screen_active());
     assert(lv_obj_get_width(lv_screen_active()) == 568);
@@ -1227,6 +1281,7 @@ int main(int argc, char **argv)
     assert(tiny_quick_handle_area.y1 >= tiny_panel_area.y1);
     assert(tiny_quick_handle_area.y2 <= tiny_panel_area.y2);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     test_quick_control_tab_focus(ui, focus_group, display);
     memset(framebuffer, 0, (size_t)WIDTH * HEIGHT * sizeof(*framebuffer));
     render(display, argv[5]);
@@ -1286,6 +1341,7 @@ int main(int argc, char **argv)
     pages = find_by_class(screen, &lv_tileview_class);
     assert(pages);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
 
     assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(launcher_ui_take_lock_request(ui));
@@ -1360,6 +1416,7 @@ int main(int argc, char **argv)
     lv_timer_handler();
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 104);
     test_quick_control_tab_focus(ui, focus_group, display);
@@ -1480,6 +1537,7 @@ int main(int argc, char **argv)
     lv_obj_update_layout(screen);
     assert(lv_obj_get_y(quick_panel) == 0);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 84);
     test_quick_control_tab_focus(ui, focus_group, display);
@@ -1488,11 +1546,13 @@ int main(int argc, char **argv)
     lv_display_set_rotation(display, LV_DISPLAY_ROTATION_0);
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 104);
     lv_display_set_rotation(display, LV_DISPLAY_ROTATION_90);
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_height(orientation_button) == 84);
     launcher_ui_set_session_user(ui, NULL);
     assert(lv_obj_send_event(quick_scrim, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);

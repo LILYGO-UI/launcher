@@ -351,7 +351,8 @@ int main(int argc, char **argv)
     const auto sync_system_controls = [&]() {
         const auto &state = system_controls.state();
         launcher_ui_set_system_controls(display.ui(), state.brightness_available, state.brightness_percent,
-                                        state.volume_available, state.volume_percent, state.power_off_available);
+                                        state.volume_available, state.volume_percent, state.power_off_available,
+                                        state.reboot_available);
         launcher_ui_set_software_brightness(display.ui(), state.brightness_software, state.brightness_percent);
     };
     sync_system_controls();
@@ -472,6 +473,12 @@ int main(int argc, char **argv)
             display.refresh();
             const bool success = system_controls.power_off();
             if (!success) launcher::logging::warn("power off failed: %s", system_controls.error().c_str());
+            launcher_ui_set_power_result(display.ui(), success, system_controls.state().simulated);
+        }
+        if (authenticated && launcher_ui_take_reboot_request(display.ui())) {
+            display.refresh();
+            const bool success = system_controls.reboot();
+            if (!success) launcher::logging::warn("restart failed: %s", system_controls.error().c_str());
             launcher_ui_set_power_result(display.ui(), success, system_controls.state().simulated);
         }
         const unsigned int power_events = power_button.poll(tick_ms());

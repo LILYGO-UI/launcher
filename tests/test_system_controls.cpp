@@ -51,6 +51,7 @@ void simulator_never_changes_devices()
     assert(controls.state().brightness_available);
     assert(controls.state().volume_available);
     assert(controls.state().power_off_available);
+    assert(controls.state().reboot_available);
     assert(controls.set_brightness(-100));
     assert(controls.state().brightness_percent == 1);
     assert(controls.set_volume(110));
@@ -60,8 +61,9 @@ void simulator_never_changes_devices()
     assert(controls.set_brightness(72));
     assert(controls.refresh().brightness_percent == 72);
     assert(backlights.brightness("panel") == 128);
-    // This is the only power_off invocation in the tests; it is in-memory.
+    // This is the only power/reboot invocation in the tests; it is in-memory.
     assert(controls.power_off());
+    assert(controls.reboot());
     assert(controls.error().empty());
 }
 
@@ -167,6 +169,7 @@ void simulator_build_cannot_enable_hardware()
     assert(controls.set_brightness(80));
     assert(backlights.brightness("panel") == 128);
     assert(controls.power_off());
+    assert(controls.reboot());
 }
 
 #endif
