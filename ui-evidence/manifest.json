@@ -1,0 +1,58 @@
+{
+  "candidate_sha": "6e118803a6d32372c974ce50fd76d87e6da14025",
+  "pull_request": 2,
+  "sources": {
+    "board-k230-b01": {
+      "board_id": "k230-b01",
+      "boot_unchanged": true,
+      "build": "k230-debian; LAUNCHER_SYSTEM_SESSION=OFF (local session)",
+      "captured_at": "2026-11-26T02:45:32.167159+00:00",
+      "display_modes": [
+        "568x1232"
+      ],
+      "images": {
+        "after-cancel.png": "860ea2ecb80e4bf92a0da42a21ce2dc77db3f10675bbf77bf19941e24a09384f",
+        "quick-controls.png": "b3bb2339be562b8d7c69fbf9125b4544e05cb9f6b8b27ff8fd184845afcab5ab",
+        "restart-confirmation.png": "cd508f58524168d1382cb5e06c19debe88f6f00de53d10d3e8e3017a8fcada76"
+      },
+      "input": "Goodix evdev",
+      "model": "T-Display-K230",
+      "original_service_restored": true,
+      "running_sha256": "696b5fed1edd50566a900ce95ed5f6a06f4cef4fd3b171964e02f0939b64a256",
+      "source": "DRM primary scanout",
+      "steps": [
+        "Open Quick controls",
+        "Power off and Restart on the same row",
+        "Tap Restart",
+        "Verify Restart? dialog",
+        "Cancel and return to Quick controls"
+      ]
+    },
+    "board-t-display-cm0-b01": {
+      "board_id": "t-display-cm0-b01",
+      "boot_unchanged": true,
+      "build": "cm0-cross; LAUNCHER_SYSTEM_SESSION=OFF (local session); capture-only observer on the candidate DRM fd",
+      "captured_at": "2026-11-26T02:45:00.422803+00:00",
+      "display_modes": [
+        "568x1232"
+      ],
+      "images": {
+        "after-cancel.png": "22fbde946a9bc1514e21859eec5c68365ea467dad4071e4c51d021f598732177",
+        "quick-controls.png": "22fbde946a9bc1514e21859eec5c68365ea467dad4071e4c51d021f598732177",
+        "restart-confirmation.png": "3318946c1b39db1203a26020d46ef4a0d489adaf1c2fb8934dcae6db1ce74e67"
+      },
+      "input": "Goodix evdev",
+      "model": "T-Display-CM0",
+      "original_service_restored": true,
+      "running_sha256": "7036279e5da215cb57286b3f46172a5d1258be9be4ce19f161540d44642f3f4f",
+      "source": "DRM primary scanout",
+      "steps": [
+        "Open Quick controls",
+        "Power off and Restart on the same row",
+        "Tap Restart",
+        "Verify Restart? dialog",
+        "Cancel and return to Quick controls"
+      ]
+    }
+  }
+}
