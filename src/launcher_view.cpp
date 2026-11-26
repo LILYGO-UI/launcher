@@ -439,7 +439,7 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     lv_obj_set_style_text_font(session_text, font_22, 0);
 
     lv_obj_t *power_group = create_control_group(controls, "quick_power");
-    lv_obj_set_flex_flow(power_group, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_flow(power_group, LV_FLEX_FLOW_ROW);
     lv_obj_t *power = lv_button_create(power_group);
     lv_obj_set_name_static(power, "power_button");
     lv_obj_set_size(power, 220, 104);
@@ -942,13 +942,24 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     const int32_t card_height = height < 260 ? 44 : (compact ? 84 : 104);
     const int32_t actions_width = columns * card_width + (columns - 1) * card_gap;
     const int32_t actions_height = rows * card_height + (rows - 1) * card_gap;
-    const int32_t power_height = 2 * card_height + card_gap;
-    const int32_t levels_width = std::min(452, available_width);
-    const int32_t level_width = (levels_width - card_gap) / 2;
+    // Keep the two power actions together, even when whole groups wrap.
+    // On wide panels share the space after the action grid with the two sliders.
+    const int32_t remaining = available_width - actions_width - 2 * card_gap;
+    const int32_t pair_width = remaining >= 2 * (2 * 144 + card_gap)
+                                   ? std::min(452, remaining / 2) : std::min(452, available_width);
+    const int32_t level_width = (pair_width - card_gap) / 2;
     const int32_t levels_height = height < 260 ? 208 : (compact ? 232 : 264);
-    const bool side_by_side = actions_width + card_gap + card_width + card_gap + levels_width <= available_width;
-    const int32_t controls_height = controls_pad_y + (side_by_side ? std::max({actions_height, power_height, levels_height}) :
-                                                                     actions_height + card_gap + power_height + card_gap + levels_height);
+    int32_t controls_height = controls_pad_y, used = 0, row_height = 0;
+    const int32_t groups[][2] = {{actions_width, actions_height}, {pair_width, card_height}, {pair_width, levels_height}};
+    for (const auto &group : groups) {
+        if (used && used + card_gap + group[0] > available_width) {
+            controls_height += row_height + card_gap;
+            used = row_height = 0;
+        }
+        used += (used ? card_gap : 0) + group[0];
+        row_height = std::max(row_height, group[1]);
+    }
+    controls_height += row_height;
     const int32_t panel_height = std::min(height, std::max(compact ? 190 : 260,
                                                           chrome_height + controls_height));
 
@@ -972,9 +983,11 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     }
     lv_obj_set_size(lv_obj_get_parent(view->orientation_button), actions_width, actions_height);
     lv_obj_t *power_group = lv_obj_get_parent(view->power_button);
-    lv_obj_set_size(power_group, card_width, power_height);
-    lv_obj_set_size(view->power_button, card_width, card_height);
-    lv_obj_set_size(view->reboot_button, card_width, card_height);
+    lv_obj_set_size(power_group, pair_width, card_height);
+    for (lv_obj_t *button : {view->power_button, view->reboot_button}) {
+        lv_obj_set_size(button, level_width, card_height);
+        lv_obj_set_flag(lv_obj_get_child(button, 0), LV_OBJ_FLAG_HIDDEN, level_width < 144);
+    }
     lv_obj_t *sliders[] = {view->brightness_slider, view->volume_slider};
     for (lv_obj_t *slider : sliders) {
         lv_obj_t *card = lv_obj_get_parent(slider);
@@ -983,7 +996,7 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
         lv_obj_t *title = lv_obj_get_child(card, 1);
         lv_obj_set_style_text_font(title, lilygo_ui_font_get(level_width < 150 ? 14 : 22), 0);
     }
-    lv_obj_set_size(lv_obj_get_parent(lv_obj_get_parent(view->brightness_slider)), levels_width, levels_height);
+    lv_obj_set_size(lv_obj_get_parent(lv_obj_get_parent(view->brightness_slider)), pair_width, levels_height);
     if (view->power_confirm_scrim) {
         lv_obj_update_layout(view->power_confirm_scrim);
         layout_power_confirmation(view->power_confirm_scrim);

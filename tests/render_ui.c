@@ -196,6 +196,18 @@ static uint32_t active_page_index(lv_obj_t *pages)
     return lv_obj_get_index(active);
 }
 
+static void assert_power_actions_share_row(lv_obj_t *screen)
+{
+    lv_area_t power, restart, group;
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "power_button"), &power);
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "reboot_button"), &restart);
+    lv_obj_get_coords(lv_obj_find_by_name(screen, "quick_power"), &group);
+    assert(power.y1 == restart.y1 && power.y2 == restart.y2);
+    assert(restart.x1 - power.x2 == 13); /* 12 px gap, inclusive LVGL bounds */
+    assert(lv_area_get_width(&power) == lv_area_get_width(&restart));
+    assert(power.x1 >= group.x1 && restart.x2 <= group.x2);
+}
+
 static void assert_session_actions_fit(lv_obj_t *screen)
 {
     lv_obj_t *panel = lv_obj_find_by_name(screen, "quick_panel");
@@ -1269,6 +1281,7 @@ int main(int argc, char **argv)
     assert(tiny_quick_handle_area.y1 >= tiny_panel_area.y1);
     assert(tiny_quick_handle_area.y2 <= tiny_panel_area.y2);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     test_quick_control_tab_focus(ui, focus_group, display);
     memset(framebuffer, 0, (size_t)WIDTH * HEIGHT * sizeof(*framebuffer));
     render(display, argv[5]);
@@ -1328,6 +1341,7 @@ int main(int argc, char **argv)
     pages = find_by_class(screen, &lv_tileview_class);
     assert(pages);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
 
     assert(lv_obj_send_event(lv_obj_find_by_name(screen, "lock_button"), LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(launcher_ui_take_lock_request(ui));
@@ -1402,6 +1416,7 @@ int main(int argc, char **argv)
     lv_timer_handler();
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 104);
     test_quick_control_tab_focus(ui, focus_group, display);
@@ -1522,6 +1537,7 @@ int main(int argc, char **argv)
     lv_obj_update_layout(screen);
     assert(lv_obj_get_y(quick_panel) == 0);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 84);
     test_quick_control_tab_focus(ui, focus_group, display);
@@ -1530,11 +1546,13 @@ int main(int argc, char **argv)
     lv_display_set_rotation(display, LV_DISPLAY_ROTATION_0);
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_width(orientation_button) == 220);
     assert(lv_obj_get_height(orientation_button) == 104);
     lv_display_set_rotation(display, LV_DISPLAY_ROTATION_90);
     lv_obj_update_layout(screen);
     assert_session_actions_fit(screen);
+    assert_power_actions_share_row(screen);
     assert(lv_obj_get_height(orientation_button) == 84);
     launcher_ui_set_session_user(ui, NULL);
     assert(lv_obj_send_event(quick_scrim, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
