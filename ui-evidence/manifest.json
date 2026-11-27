@@ -1,0 +1,14 @@
+{
+  "candidate_sha": "405eb80a14756427e26c096d140ed1ca7391f138",
+  "pull_request": 3,
+  "sources": {
+    "simulator": {
+      "images": {
+        "launcher-quick-controls.png": "02e7b852db9ba53ae4a17f6a6824b229999fad6545d87cc180f339764d977828",
+        "quick-controls-reboot.png": "e196030e7b6051166bb6daa4e29cfa0da764ffa5d3ac7b28ca8364e33e8def6b",
+        "reboot-confirmation.png": "aac1403bf2fe608e94f9bf00ea60ae46d486e16307e112dd592f3f715bbc0bcc",
+        "reboot-simulation-complete.png": "b0296d3b1fe82de04f15e6e2fe4e663ac6a0e959e7a642737a1bef2b293d2eae"
+      }
+    }
+  }
+}
