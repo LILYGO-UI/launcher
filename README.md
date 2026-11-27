@@ -34,10 +34,11 @@ simulator's host keyboard do not trigger automatic rotation.
 After signing in on the device, Quick controls also provides **Lock screen**.
 Locking keeps the current account session and requires that account's password
 to unlock. **Sign out** ends the session instead. Quick controls also provides
-iOS-style **Power off**, **Brightness**, and **Volume** cards. Brightness and
+iOS-style **Power off**, **Reboot**, **Brightness**, and **Volume** cards. Brightness and
 volume can be dragged vertically or adjusted from a keyboard in five-percent
-steps. Power off always asks for confirmation; the simulator shows a safe
-completion message instead of powering off the host.
+steps. **Reboot** restarts the device after confirmation. Both power actions
+focus **Cancel** first. In the simulator, confirming either action displays a
+completion message and keeps the host running.
 Connection detection reads the TCA8418 configuration register through
 `/dev/i2c-*`. If unplugging resets the chip while its input node remains,
 Launcher rebinds that TCA8418 client to the kernel driver to restore matrix

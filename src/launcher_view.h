@@ -26,6 +26,7 @@ typedef struct {
     lv_obj_t *session_button;
     lv_obj_t *session_label;
     lv_obj_t *power_button;
+    lv_obj_t *reboot_button;
     lv_obj_t *brightness_slider;
     lv_obj_t *brightness_label;
     lv_obj_t *volume_slider;

@@ -351,7 +351,8 @@ int main(int argc, char **argv)
     const auto sync_system_controls = [&]() {
         const auto &state = system_controls.state();
         launcher_ui_set_system_controls(display.ui(), state.brightness_available, state.brightness_percent,
-                                        state.volume_available, state.volume_percent, state.power_off_available);
+                                        state.volume_available, state.volume_percent, state.power_off_available,
+                                        state.reboot_available);
         launcher_ui_set_software_brightness(display.ui(), state.brightness_software, state.brightness_percent);
     };
     sync_system_controls();
@@ -468,10 +469,11 @@ int main(int argc, char **argv)
             levels_changed = true;
         }
         if (levels_changed) sync_system_controls();
-        if (authenticated && launcher_ui_take_power_request(display.ui())) {
+        const auto power_action = authenticated ? launcher_ui_take_power_request(display.ui()) : LAUNCHER_POWER_NONE;
+        if (power_action != LAUNCHER_POWER_NONE) {
             display.refresh();
-            const bool success = system_controls.power_off();
-            if (!success) launcher::logging::warn("power off failed: %s", system_controls.error().c_str());
+            const bool success = power_action == LAUNCHER_POWER_REBOOT ? system_controls.reboot() : system_controls.power_off();
+            if (!success) launcher::logging::warn("power request failed: %s", system_controls.error().c_str());
             launcher_ui_set_power_result(display.ui(), success, system_controls.state().simulated);
         }
         const unsigned int power_events = power_button.poll(tick_ms());

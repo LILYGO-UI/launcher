@@ -18,6 +18,12 @@ typedef enum {
     LAUNCHER_ORIENTATION_LANDSCAPE = 1,
 } launcher_orientation_t;
 
+typedef enum {
+    LAUNCHER_POWER_NONE = 0,
+    LAUNCHER_POWER_OFF,
+    LAUNCHER_POWER_REBOOT,
+} launcher_power_action_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,11 +49,11 @@ bool launcher_ui_take_file_share_decision(launcher_ui_t *ui, bool *accepted);
 bool launcher_ui_file_share_open(const launcher_ui_t *ui);
 /* Synchronize device capabilities and levels without interrupting a drag. */
 void launcher_ui_set_system_controls(launcher_ui_t *ui, bool brightness_available, int brightness_percent,
-                                     bool volume_available, int volume_percent, bool power_available);
+                                     bool volume_available, int volume_percent, bool power_available, bool reboot_available);
 void launcher_ui_set_software_brightness(launcher_ui_t *ui, bool enabled, int percent);
 bool launcher_ui_take_brightness_request(launcher_ui_t *ui, int *percent);
 bool launcher_ui_take_volume_request(launcher_ui_t *ui, int *percent);
-bool launcher_ui_take_power_request(launcher_ui_t *ui);
+launcher_power_action_t launcher_ui_take_power_request(launcher_ui_t *ui);
 void launcher_ui_set_power_result(launcher_ui_t *ui, bool success, bool simulated);
 /* Block home actions and discard queued requests while an account screen is active. */
 void launcher_ui_set_input_enabled(launcher_ui_t *ui, bool enabled);

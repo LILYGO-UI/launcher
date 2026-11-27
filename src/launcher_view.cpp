@@ -281,6 +281,28 @@ lv_obj_t *create_quick_scrim(lv_obj_t *screen)
     return scrim;
 }
 
+lv_obj_t *create_power_button(lv_obj_t *parent, const char *name, const char *symbol, const char *text,
+                              const lv_font_t *font_22, const lv_font_t *font_28)
+{
+    lv_obj_t *button = lv_button_create(parent);
+    lv_obj_set_name_static(button, name);
+    style_quick_control(button);
+    lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_set_style_pad_column(button, 14, 0);
+    lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *icon = lv_label_create(button);
+    make_decoration(icon);
+    lv_label_set_text(icon, symbol);
+    lv_obj_set_style_text_font(icon, font_28, 0);
+    lv_obj_set_style_text_color(icon, lv_color_hex(launcher::theme::kDestructive), 0);
+    lv_obj_t *label = lv_label_create(button);
+    make_decoration(label);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, font_22, 0);
+    return button;
+}
+
 lv_obj_t *create_quick_panel(launcher_view_t *view)
 {
     lv_obj_t *screen = view->screen;
@@ -438,23 +460,8 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     lv_obj_set_style_text_font(session_text, font_22, 0);
 
     lv_obj_t *power_group = create_control_group(controls, "quick_power");
-    lv_obj_t *power = lv_button_create(power_group);
-    lv_obj_set_name_static(power, "power_button");
-    lv_obj_set_size(power, 220, 104);
-    style_quick_control(power);
-    lv_obj_set_style_pad_all(power, 0, 0);
-    lv_obj_set_style_pad_column(power, 14, 0);
-    lv_obj_set_flex_flow(power, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(power, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_t *power_icon = lv_label_create(power);
-    make_decoration(power_icon);
-    lv_label_set_text(power_icon, LV_SYMBOL_POWER);
-    lv_obj_set_style_text_font(power_icon, font_28, 0);
-    lv_obj_set_style_text_color(power_icon, lv_color_hex(launcher::theme::kDestructive), 0);
-    lv_obj_t *power_label = lv_label_create(power);
-    make_decoration(power_label);
-    lv_label_set_text(power_label, "Power off");
-    lv_obj_set_style_text_font(power_label, font_22, 0);
+    view->power_button = create_power_button(power_group, "power_button", LV_SYMBOL_POWER, "Power off", font_22, font_28);
+    view->reboot_button = create_power_button(power_group, "reboot_button", LV_SYMBOL_LOOP, "Reboot", font_22, font_28);
 
     lv_obj_t *levels = create_control_group(controls, "quick_levels");
     create_level_card(levels, "brightness_card", "brightness_slider", "brightness_label", "Brightness", true,
@@ -490,7 +497,6 @@ lv_obj_t *create_quick_panel(launcher_view_t *view)
     view->lock_button = lock;
     view->session_button = session;
     view->session_label = session_text;
-    view->power_button = power;
     return panel;
 }
 
@@ -852,7 +858,7 @@ bool launcher_view_create(launcher_view_t *view)
            view->file_share_scrim && view->file_share_panel && view->file_share_path && view->file_share_status &&
            view->file_share_approve_button && view->file_share_reject_button && view->file_share_close_button &&
            view->lock_button && view->session_button &&
-           view->session_label && view->home_indicator && view->brightness_overlay && view->power_button &&
+           view->session_label && view->home_indicator && view->brightness_overlay && view->power_button && view->reboot_button &&
            view->brightness_slider && view->brightness_label && view->volume_slider && view->volume_label &&
            view->power_confirm_scrim && view->power_confirm_button && view->power_cancel_button &&
            view->power_confirm_title && view->power_confirm_hint &&
@@ -922,8 +928,10 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     const int32_t level_width = (levels_width - card_gap) / 2;
     const int32_t levels_height = height < 260 ? 208 : (compact ? 232 : 264);
     const bool side_by_side = actions_width + card_gap + card_width + card_gap + levels_width <= available_width;
-    const int32_t controls_height = controls_pad_y + (side_by_side ? std::max({actions_height, card_height, levels_height}) :
-                                                                     actions_height + card_gap + card_height + card_gap + levels_height);
+    const bool stack_power = side_by_side || columns == 1;
+    const int32_t power_height = stack_power ? 2 * card_height + card_gap : card_height;
+    const int32_t controls_height = controls_pad_y + (side_by_side ? std::max({actions_height, power_height, levels_height}) :
+                                                                     actions_height + card_gap + power_height + card_gap + levels_height);
     const int32_t panel_height = std::min(height, std::max(compact ? 190 : 260,
                                                           chrome_height + controls_height));
 
@@ -947,8 +955,9 @@ int32_t launcher_view_layout_quick_panel(launcher_view_t *view, int32_t width, i
     }
     lv_obj_set_size(lv_obj_get_parent(view->orientation_button), actions_width, actions_height);
     lv_obj_t *power_group = lv_obj_get_parent(view->power_button);
-    lv_obj_set_size(power_group, card_width, card_height);
+    lv_obj_set_size(power_group, stack_power ? card_width : actions_width, power_height);
     lv_obj_set_size(view->power_button, card_width, card_height);
+    lv_obj_set_size(view->reboot_button, card_width, card_height);
     lv_obj_t *sliders[] = {view->brightness_slider, view->volume_slider};
     for (lv_obj_t *slider : sliders) {
         lv_obj_t *card = lv_obj_get_parent(slider);

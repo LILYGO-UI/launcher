@@ -94,6 +94,15 @@ static void render(lv_display_t *display, const char *path)
     write_ppm(path, lv_display_get_horizontal_resolution(display), lv_display_get_vertical_resolution(display));
 }
 
+static void render_reboot_state(lv_display_t *display, const char *filename)
+{
+    const char *dir = getenv("AGENT_HIL_SCREENSHOT_DIR");
+    char path[4096];
+    int length = snprintf(path, sizeof(path), "%s/%s", dir && *dir ? dir : ".", filename);
+    assert(length >= 0 && (size_t)length < sizeof(path));
+    render(display, path);
+}
+
 static void assert_file_share_content_fits(lv_obj_t *screen)
 {
     lv_obj_t *panel = lv_obj_find_by_name(screen, "file_share_panel");
@@ -418,9 +427,10 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
     lv_obj_t *lock = lv_obj_find_by_name(screen, "lock_button");
     lv_obj_t *logout = lv_obj_find_by_name(screen, "session_button");
     lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *reboot = lv_obj_find_by_name(screen, "reboot_button");
     lv_obj_t *brightness = lv_obj_find_by_name(screen, "brightness_slider");
     lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
-    assert(viewport && orientation && share && lock && logout && power && brightness && volume);
+    assert(viewport && orientation && share && lock && logout && power && reboot && brightness && volume);
     assert(!lv_obj_has_flag(lv_obj_find_by_name(screen, "quick_scrim"), LV_OBJ_FLAG_HIDDEN));
     lv_group_t *controls_group = lv_obj_get_group(orientation);
     assert(controls_group && controls_group != group);
@@ -437,12 +447,12 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
     /* Complete both cycles: Tab from the last card and Shift+Tab from the
      * first card must wrap within the open panel instead of reaching apps. */
     const uint32_t keys[] = {
-        LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT,
-        LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV,
+        LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT, LV_KEY_NEXT,
+        LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV, LV_KEY_PREV,
     };
     lv_obj_t *expected[] = {
-        share, lock, logout, power, brightness, volume, orientation,
-        volume, brightness, power, logout, lock, share, orientation,
+        share, lock, logout, power, reboot, brightness, volume, orientation,
+        volume, brightness, reboot, power, logout, lock, share, orientation,
     };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
         sample_keyboard(keyboard, keys[i], LV_INDEV_STATE_PRESSED, 0);
@@ -456,7 +466,7 @@ static void test_quick_control_tab_focus(launcher_ui_t *ui, lv_group_t *group, l
         sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_PRESSED, 150);
         lv_obj_t *focused = lv_group_get_focused(lv_indev_get_group(keyboard));
         assert(focused == orientation || focused == share || focused == lock || focused == logout ||
-               focused == power || focused == brightness || focused == volume);
+               focused == power || focused == reboot || focused == brightness || focused == volume);
     }
     sample_keyboard(keyboard, LV_KEY_NEXT, LV_INDEV_STATE_RELEASED, 0);
     lv_group_focus_obj(orientation);
@@ -621,7 +631,7 @@ static void test_keyboard_navigation(launcher_ui_t *ui, launcher_registry_t *reg
     /* Hidden account controls and unavailable system controls must be skipped
      * in both directions, leaving the orientation card as the only action. */
     launcher_ui_set_session_user(ui, NULL);
-    launcher_ui_set_system_controls(ui, false, 0, false, 0, false);
+    launcher_ui_set_system_controls(ui, false, 0, false, 0, false, false);
     sample_keyboard(keyboard, ' ', LV_INDEV_STATE_PRESSED, 0);
     sample_keyboard(keyboard, ' ', LV_INDEV_STATE_RELEASED, 0);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
@@ -650,7 +660,7 @@ static void test_keyboard_navigation(launcher_ui_t *ui, launcher_registry_t *reg
     assert(!launcher_ui_take_launch_request(ui));
     launcher_ui_set_input_enabled(ui, true);
     launcher_ui_set_session_user(ui, NULL);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     lv_indev_delete(keyboard);
 }
 
@@ -670,12 +680,14 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_obj_t *volume = lv_obj_find_by_name(screen, "volume_slider");
     lv_obj_t *volume_label = lv_obj_find_by_name(screen, "volume_label");
     lv_obj_t *power = lv_obj_find_by_name(screen, "power_button");
+    lv_obj_t *reboot = lv_obj_find_by_name(screen, "reboot_button");
     lv_obj_t *confirmation = lv_obj_find_by_name(screen, "power_confirm_scrim");
     lv_obj_t *confirm = lv_obj_find_by_name(screen, "power_confirm_button");
     lv_obj_t *cancel = lv_obj_find_by_name(screen, "power_cancel_button");
     lv_obj_t *hint = lv_obj_find_by_name(screen, "power_confirm_hint");
+    lv_obj_t *title = lv_obj_find_by_name(screen, "power_confirm_title");
     assert(quick_scrim && orientation && brightness && brightness_label && volume && volume_label && power);
-    assert(confirmation && confirm && cancel && hint);
+    assert(confirmation && confirm && cancel && hint && title && reboot);
     assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
 
     keyboard_sample_t sample = {0, LV_INDEV_STATE_RELEASED, false};
@@ -689,7 +701,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_timer_pause(lv_indev_get_read_timer(keyboard));
     int requested = -1;
 
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     press_key(keyboard, ' ');
     settle_focus_render(display);
     assert(!lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
@@ -720,14 +732,14 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* The backlight cannot be turned completely off; muted audio can reach
      * zero. Hardware samples outside the supported range are also clamped. */
-    launcher_ui_set_system_controls(ui, true, -20, true, 140, true);
+    launcher_ui_set_system_controls(ui, true, -20, true, 140, true, true);
     assert(lv_slider_get_value(brightness) == 1);
     assert(lv_slider_get_value(volume) == 100);
     lv_group_focus_obj(brightness);
     press_key(keyboard, LV_KEY_DOWN);
     assert(lv_slider_get_value(brightness) == 1);
     if (launcher_ui_take_brightness_request(ui, &requested)) assert(requested == 1);
-    launcher_ui_set_system_controls(ui, true, 98, true, 2, true);
+    launcher_ui_set_system_controls(ui, true, 98, true, 2, true, true);
     press_key(keyboard, LV_KEY_UP);
     assert(launcher_ui_take_brightness_request(ui, &requested) && requested == 100);
     lv_group_focus_obj(volume);
@@ -736,7 +748,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* Exercise real pointer input: dragging a vertical level card must not
      * trigger the panel's upward-dismiss gesture or lose the final value. */
-    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true, true);
     lv_group_focus_obj(brightness);
     settle_focus_render(display);
     lv_area_t slider_area;
@@ -750,7 +762,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     lv_indev_read(pointer);
     assert(lv_slider_get_value(brightness) >= 75);
     const int dragged_brightness = lv_slider_get_value(brightness);
-    launcher_ui_set_system_controls(ui, true, 25, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 25, true, 40, true, true);
     assert(lv_slider_get_value(brightness) == dragged_brightness);
     pointer_state = LV_INDEV_STATE_RELEASED;
     lv_indev_read(pointer);
@@ -760,10 +772,12 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
 
     /* Missing devices stay visibly unavailable, ignore synthetic value
      * events, and are omitted from keyboard navigation. */
-    launcher_ui_set_system_controls(ui, false, 50, false, 50, false);
+    launcher_ui_set_system_controls(ui, false, 50, false, 50, false, false);
     assert(lv_obj_has_state(brightness, LV_STATE_DISABLED));
     assert(lv_obj_has_state(volume, LV_STATE_DISABLED));
     assert(lv_obj_has_state(power, LV_STATE_DISABLED));
+    assert(lv_obj_has_state(reboot, LV_STATE_DISABLED));
+    assert(lv_obj_send_event(reboot, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
     assert(strcmp(lv_label_get_text(brightness_label), "--") == 0);
     assert(strcmp(lv_label_get_text(volume_label), "--") == 0);
     assert(lv_obj_send_event(brightness, LV_EVENT_VALUE_CHANGED, NULL) == LV_RESULT_OK);
@@ -777,10 +791,44 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     press_key(keyboard, LV_KEY_NEXT);
     assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == orientation);
 
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, false, true);
+    lv_group_focus_obj(reboot);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == cancel);
+    assert(strcmp(lv_label_get_text(title), "Reboot?") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(confirm, 0)), "Reboot") == 0);
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_NONE);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == reboot);
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_NONE);
+
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
+    settle_focus_render(display);
+    render_reboot_state(display, "quick-controls-reboot.ppm");
+    assert(lv_obj_send_event(reboot, LV_EVENT_CLICKED, NULL) == LV_RESULT_OK);
+    render_reboot_state(display, "reboot-confirmation.ppm");
+    press_key(keyboard, LV_KEY_NEXT);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_REBOOT);
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_NONE);
+    assert(strcmp(lv_label_get_text(title), "Rebooting") == 0);
+    launcher_ui_set_power_result(ui, false, false);
+    assert(strcmp(lv_label_get_text(title), "Couldn't reboot") == 0);
+    lv_group_focus_obj(confirm);
+    press_key(keyboard, LV_KEY_ENTER);
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_REBOOT);
+    launcher_ui_set_power_result(ui, true, true);
+    assert(lv_obj_has_flag(confirm, LV_OBJ_FLAG_HIDDEN));
+    assert(strstr(lv_label_get_text(hint), "won't restart"));
+    render_reboot_state(display, "reboot-simulation-complete.ppm");
+    press_key(keyboard, LV_KEY_ESC);
+
     lv_group_focus_obj(power);
     sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
     assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(title), "Power off?") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(confirm, 0)), "Power off") == 0);
     assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == cancel);
     for (int i = 0; i < 5; ++i) {
         sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 150);
@@ -804,7 +852,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     press_key(keyboard, LV_KEY_NEXT);
     assert(lv_group_get_focused(lv_indev_get_group(keyboard)) == confirm);
     sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 0);
-    assert(launcher_ui_take_power_request(ui));
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_OFF);
     for (int i = 0; i < 5; ++i) {
         sample_keyboard(keyboard, LV_KEY_ENTER, LV_INDEV_STATE_PRESSED, 150);
         assert(!launcher_ui_take_power_request(ui));
@@ -817,7 +865,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     assert(strlen(lv_label_get_text(hint)) > 0);
     lv_group_focus_obj(confirm);
     press_key(keyboard, LV_KEY_ENTER);
-    assert(launcher_ui_take_power_request(ui));
+    assert(launcher_ui_take_power_request(ui) == LAUNCHER_POWER_OFF);
     launcher_ui_set_power_result(ui, true, true);
     assert(!lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
     assert(lv_obj_has_flag(confirm, LV_OBJ_FLAG_HIDDEN));
@@ -848,7 +896,7 @@ static void test_system_controls(launcher_ui_t *ui, lv_group_t *group, lv_displa
     assert(!launcher_ui_take_power_request(ui));
     assert(lv_obj_has_flag(confirmation, LV_OBJ_FLAG_HIDDEN));
     launcher_ui_set_input_enabled(ui, true);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     settle_focus_render(display);
     assert(lv_obj_has_flag(quick_scrim, LV_OBJ_FLAG_HIDDEN));
     lv_indev_delete(keyboard);
@@ -924,7 +972,7 @@ int main(int argc, char **argv)
     lv_obj_t *previous_screen        = lv_screen_active();
     launcher_ui_t *ui                = launcher_ui_create(&registry);
     assert(ui);
-    launcher_ui_set_system_controls(ui, true, 65, true, 40, true);
+    launcher_ui_set_system_controls(ui, true, 65, true, 40, true, true);
     assert(lv_indev_get_event_count(input) == input_event_count + 3);
     lv_obj_update_layout(lv_screen_active());
     assert(lv_obj_get_width(lv_screen_active()) == 568);
