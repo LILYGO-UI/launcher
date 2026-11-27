@@ -1,0 +1,52 @@
+{
+  "candidate_sha": "405eb80a14756427e26c096d140ed1ca7391f138",
+  "pull_request": 3,
+  "sources": {
+    "board-k230-b01": {
+      "board_id": "k230-b01",
+      "boot_unchanged": true,
+      "candidate_retained": true,
+      "captured_at": "2026-11-27T09:01:54.108183+00:00",
+      "display_modes": [
+        "568x1232"
+      ],
+      "images": {
+        "after-cancel.png": "ca7638b2e6df2a898d7bb33492ed1b5974b26f619841f71e81413f6ff9f2e663",
+        "confirmation.png": "94656db2853e1ac60b3bbc8e00f37b8127e8365704ae3388f3785a360619a6c6",
+        "quick-controls.png": "ca7638b2e6df2a898d7bb33492ed1b5974b26f619841f71e81413f6ff9f2e663"
+      },
+      "model": "T-Display-K230",
+      "running_sha256": "49b80354063b4f613da73eaa2158c9ff58d63bd98cb49eea79e6485ae0f94659",
+      "source": "DRM primary scanout",
+      "steps": [
+        "Open Quick controls",
+        "Tap Reboot",
+        "Verify Reboot?",
+        "Cancel and return to Quick controls"
+      ]
+    },
+    "board-t-display-cm0-b01": {
+      "board_id": "t-display-cm0-b01",
+      "boot_unchanged": true,
+      "candidate_retained": true,
+      "captured_at": "2026-11-27T09:38:02.485783+00:00",
+      "display_modes": [
+        "568x1232"
+      ],
+      "images": {
+        "after-cancel.png": "448ff2662fa30d5fbd13eae363a765bb23435a1d03c825e117a631d5bebb458b",
+        "confirmation.png": "3f09d78746526e720e6b0451a11e4edbff43f88d81943492e95cc83dc9104b4c",
+        "quick-controls.png": "448ff2662fa30d5fbd13eae363a765bb23435a1d03c825e117a631d5bebb458b"
+      },
+      "model": "T-Display-CM0",
+      "running_sha256": "41fdc9e01d0a253b8547348646224924ed20ba388df9fb789637371eb2c211f6",
+      "source": "DRM primary scanout",
+      "steps": [
+        "Open Quick controls",
+        "Tap Reboot",
+        "Verify Reboot?",
+        "Cancel and return to Quick controls"
+      ]
+    }
+  }
+}
