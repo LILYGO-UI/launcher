@@ -42,14 +42,16 @@ const char *systemctl_path()
     return nullptr;
 }
 
-const char *local_poweroff_path()
+const char *local_power_path(bool restart)
 {
 #if defined(LAUNCHER_SYSTEM_SESSION) && !LAUNCHER_SYSTEM_SESSION
-    // Buildroot normally uses BusyBox init. Its ordinary poweroff command
-    // asks init to run shutdown scripts; never bypass init with a force flag.
+    // Buildroot uses BusyBox init. Use its orderly commands without force flags.
     if (geteuid() != 0) return nullptr;
-    for (const char *path : {"/sbin/poweroff", "/usr/sbin/poweroff"})
+    for (const char *path : {restart ? "/sbin/reboot" : "/sbin/poweroff",
+                             restart ? "/usr/sbin/reboot" : "/usr/sbin/poweroff"})
         if (access(path, X_OK) == 0) return path;
+#else
+    (void)restart;
 #endif
     return nullptr;
 }
@@ -78,6 +80,7 @@ SystemControls::SystemControls(bool simulated, lilygo::ui::HardwarePaths paths)
         state_.volume_available = true;
         state_.volume_percent = 45;
         state_.power_off_available = true;
+        state_.reboot_available = true;
     }
     refresh();
 }
@@ -88,8 +91,10 @@ const SystemControlsState &SystemControls::refresh()
     refresh_brightness();
     refresh_volume();
 #if defined(__linux__) && !defined(LAUNCHER_SIMULATOR)
-    state_.power_off_available =
-        (systemctl_path() && access("/run/systemd/system", F_OK) == 0) || local_poweroff_path();
+    const bool systemd = access("/run/systemd/system", F_OK) == 0;
+    const char *systemctl = systemd ? systemctl_path() : nullptr;
+    state_.power_off_available = systemd ? systemctl != nullptr : local_power_path(false) != nullptr;
+    state_.reboot_available = systemd ? systemctl != nullptr : local_power_path(true) != nullptr;
 #endif
     return state_;
 }
@@ -178,20 +183,31 @@ bool SystemControls::set_volume(int percent)
 
 bool SystemControls::power_off()
 {
+    return request_power(false);
+}
+
+bool SystemControls::reboot()
+{
+    return request_power(true);
+}
+
+bool SystemControls::request_power(bool restart)
+{
     error_.clear();
     if (state_.simulated) return true;
 #if defined(__linux__) && !defined(LAUNCHER_SIMULATOR)
     const bool systemd = access("/run/systemd/system", F_OK) == 0;
-    const char *command = systemd ? systemctl_path() : local_poweroff_path();
-    if (!command || !state_.power_off_available) return fail("Power off is unavailable");
+    const char *command = systemd ? systemctl_path() : local_power_path(restart);
+    if (!command || !(restart ? state_.reboot_available : state_.power_off_available))
+        return fail(restart ? "Reboot is unavailable" : "Power off is unavailable");
     char *systemd_arguments[] = {const_cast<char *>(command), const_cast<char *>("--no-block"),
                                 const_cast<char *>("--no-ask-password"),
-                                const_cast<char *>("poweroff"), nullptr};
+                                const_cast<char *>(restart ? "reboot" : "poweroff"), nullptr};
     char *local_arguments[] = {const_cast<char *>(command), nullptr};
     char **arguments = systemd ? systemd_arguments : local_arguments;
     pid_t child = -1;
     if (posix_spawn(&child, command, nullptr, nullptr, arguments, environ) != 0)
-        return fail("Could not request power off");
+        return fail(restart ? "Could not request reboot" : "Could not request power off");
     // Bound the request even if init or the system bus stops responding.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     int status = 0;
@@ -199,16 +215,16 @@ bool SystemControls::power_off()
         const pid_t result = waitpid(child, &status, WNOHANG);
         if (result == child) {
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
-            return fail("The system could not power off");
+            return fail(restart ? "The system could not reboot" : "The system could not power off");
         }
-        if (result < 0 && errno != EINTR) return fail("Could not confirm power off");
+        if (result < 0 && errno != EINTR) return fail(restart ? "Could not confirm reboot" : "Could not confirm power off");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     kill(child, SIGKILL);
     while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-    return fail("The power off request timed out");
+    return fail(restart ? "The reboot request timed out" : "The power off request timed out");
 #else
-    return fail("Power off is unavailable");
+    return fail(restart ? "Reboot is unavailable" : "Power off is unavailable");
 #endif
 }
 
